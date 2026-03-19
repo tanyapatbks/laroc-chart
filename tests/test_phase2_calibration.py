@@ -275,6 +275,127 @@ class Phase2CalibrationTests(unittest.TestCase):
             self.assertEqual(report["metrics"]["unstable_input_count"], 1)
             self.assertEqual(report["unstable_inputs"][0]["failure_type"], "sample_timeout")
 
+    def test_phase2_loads_evaluation_manifest_with_relative_paths(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            source_dir = root / "sources"
+            crops_dir = root / "crops"
+            output_dir = root / "phase2"
+            source_dir.mkdir(parents=True, exist_ok=True)
+            crops_dir.mkdir(parents=True, exist_ok=True)
+            output_dir.mkdir(parents=True, exist_ok=True)
+
+            baseline_chart_path = root / "baseline.png"
+            cv2.imwrite(str(baseline_chart_path), self._make_chart())
+
+            manifest_path = root / "manifest.yaml"
+            manifest_path.write_text(
+                "\n".join(
+                    [
+                        "source_dir: sources",
+                        "crops_dir: crops",
+                        "cases:",
+                        "  - case_id: stable_case",
+                        "    source_image: a.png",
+                        "    chart_crop: a_chart_0.jpg",
+                        "    expected_outcome: success",
+                        "    tags: [good, baseline]",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            phase = ColorCalibrationPhase(
+                baseline_chart_path=baseline_chart_path,
+                baseline_profile_path=output_dir / "baseline_profile.json",
+                output_dir=output_dir,
+                patch_rows=6,
+                patch_cols=4,
+                cell_sample_ratio=0.5,
+                min_patch_count=8,
+                method="linear",
+            )
+            manifest = phase.load_evaluation_manifest(manifest_path)
+
+            self.assertEqual(manifest.source_dir, source_dir.resolve())
+            self.assertEqual(manifest.crops_dir, crops_dir.resolve())
+            self.assertEqual(len(manifest.cases), 1)
+            self.assertEqual(manifest.cases[0].case_id, "stable_case")
+            self.assertEqual(manifest.cases[0].source_image_path, (source_dir / "a.png").resolve())
+            self.assertEqual(manifest.cases[0].tags, ("good", "baseline"))
+
+    def test_phase2_evaluate_manifest_reports_expectations(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            source_dir = root / "sources"
+            crops_dir = root / "crops"
+            output_dir = root / "phase2_outputs"
+            reports_dir = root / "phase2_reports"
+            source_dir.mkdir(parents=True, exist_ok=True)
+            crops_dir.mkdir(parents=True, exist_ok=True)
+            output_dir.mkdir(parents=True, exist_ok=True)
+            reports_dir.mkdir(parents=True, exist_ok=True)
+
+            baseline = self._make_chart()
+            baseline_chart_path = root / "baseline.png"
+            cv2.imwrite(str(baseline_chart_path), baseline)
+
+            source = self._apply_cast(baseline)
+            crop = self._perspective_crop(source)
+            cv2.imwrite(str(source_dir / "good.png"), source)
+            cv2.imwrite(str(crops_dir / "good_chart_0.jpg"), crop)
+            cv2.imwrite(str(source_dir / "bad.png"), source)
+            (crops_dir / "bad_chart_0.jpg").write_text("bad-crop", encoding="utf-8")
+
+            manifest_path = root / "manifest.yaml"
+            manifest_path.write_text(
+                "\n".join(
+                    [
+                        "source_dir: sources",
+                        "crops_dir: crops",
+                        "cases:",
+                        "  - case_id: stable_good",
+                        "    source_image: good.png",
+                        "    chart_crop: good_chart_0.jpg",
+                        "    expected_outcome: success",
+                        "    tags: [good]",
+                        "  - case_id: broken_crop",
+                        "    source_image: bad.png",
+                        "    chart_crop: bad_chart_0.jpg",
+                        "    expected_outcome: failure",
+                        "    expected_failure_type: unreadable_chart_crop",
+                        "    tags: [bad, unreadable]",
+                    ]
+                ),
+                encoding="utf-8",
+            )
+
+            phase = ColorCalibrationPhase(
+                baseline_chart_path=baseline_chart_path,
+                baseline_profile_path=output_dir / "baseline_profile.json",
+                output_dir=output_dir,
+                patch_rows=6,
+                patch_cols=4,
+                cell_sample_ratio=0.5,
+                min_patch_count=8,
+                method="linear",
+                evaluation_reports_dir=reports_dir,
+            )
+            phase.build_and_save_baseline_profile()
+            report = phase.evaluate_manifest(
+                manifest_path=manifest_path,
+                report_name="evaluation_report",
+            )
+
+            self.assertEqual(report["success_count"], 1)
+            self.assertEqual(report["failure_count"], 1)
+            self.assertEqual(report["metrics"]["expectation"]["case_count"], 2)
+            self.assertEqual(report["metrics"]["expectation"]["matched_case_count"], 2)
+            self.assertEqual(report["metrics"]["expectation"]["unexpected_case_count"], 0)
+            self.assertTrue(Path(report["report_path"]).exists())
+            self.assertEqual(report["failures"][0]["failure_type"], "unreadable_chart_crop")
+            self.assertTrue(report["successes"][0]["matched_expectation"])
+
 
 if __name__ == "__main__":
     unittest.main()

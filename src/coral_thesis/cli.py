@@ -93,6 +93,19 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         help="Optional maximum number of crop files to process.",
     )
+    phase2_evaluate = subparsers.add_parser(
+        "phase2-evaluate-manifest",
+        help="Run Phase 2 evaluation from a curated manifest of source images and chart crops.",
+    )
+    phase2_evaluate.add_argument(
+        "--manifest",
+        help="Path to a Phase 2 evaluation manifest YAML file. Defaults to the configured manifest path.",
+    )
+    phase2_evaluate.add_argument(
+        "--report-name",
+        default="phase2_evaluation",
+        help="Filename stem for the evaluation report inside the Phase 2 evaluation reports directory.",
+    )
     return parser
 
 
@@ -232,6 +245,7 @@ def main() -> None:
             baseline_chart_path=config.paths.baseline_chart_path,
             baseline_profile_path=config.phase2.baseline_profile_path,
             output_dir=config.phase2.output_dir,
+            evaluation_reports_dir=config.phase2.evaluation_reports_dir,
             patch_rows=config.phase2.patch_rows,
             patch_cols=config.phase2.patch_cols,
             cell_sample_ratio=config.phase2.cell_sample_ratio,
@@ -248,6 +262,7 @@ def main() -> None:
             baseline_chart_path=config.paths.baseline_chart_path,
             baseline_profile_path=config.phase2.baseline_profile_path,
             output_dir=config.phase2.output_dir,
+            evaluation_reports_dir=config.phase2.evaluation_reports_dir,
             patch_rows=config.phase2.patch_rows,
             patch_cols=config.phase2.patch_cols,
             cell_sample_ratio=config.phase2.cell_sample_ratio,
@@ -268,6 +283,7 @@ def main() -> None:
             baseline_chart_path=config.paths.baseline_chart_path,
             baseline_profile_path=config.phase2.baseline_profile_path,
             output_dir=config.phase2.output_dir,
+            evaluation_reports_dir=config.phase2.evaluation_reports_dir,
             patch_rows=config.phase2.patch_rows,
             patch_cols=config.phase2.patch_cols,
             cell_sample_ratio=config.phase2.cell_sample_ratio,
@@ -281,6 +297,26 @@ def main() -> None:
             report_name=args.report_name,
             crop_glob=args.crop_glob,
             limit=args.limit,
+        )
+        _print_json(report)
+        return
+
+    if args.command == "phase2-evaluate-manifest":
+        phase = ColorCalibrationPhase(
+            baseline_chart_path=config.paths.baseline_chart_path,
+            baseline_profile_path=config.phase2.baseline_profile_path,
+            output_dir=config.phase2.output_dir,
+            evaluation_reports_dir=config.phase2.evaluation_reports_dir,
+            patch_rows=config.phase2.patch_rows,
+            patch_cols=config.phase2.patch_cols,
+            cell_sample_ratio=config.phase2.cell_sample_ratio,
+            min_patch_count=config.phase2.min_patch_count,
+            method=config.phase2.method,
+            sample_timeout_seconds=config.phase2.sample_timeout_seconds,
+        )
+        report = phase.evaluate_manifest(
+            manifest_path=Path(args.manifest) if args.manifest else config.phase2.evaluation_manifest_path,
+            report_name=args.report_name,
         )
         _print_json(report)
         return

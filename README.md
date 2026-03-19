@@ -37,8 +37,7 @@ This first V2 scaffold provides:
 - deterministic category mapping
 - a reusable feature extraction module
 - phase wrappers for detection/segmentation/model inference
-
-The actual Phase 2 color calibration rewrite is intentionally left as a separate implementation step.
+- a rewritten Phase 2 calibration pipeline with quality metrics and curated evaluation support
 
 ## Data Source Strategy
 
@@ -113,6 +112,7 @@ Example commands:
 coral-thesis phase2-baseline --config configs/base.yaml
 coral-thesis phase2-calibrate --config configs/base.yaml --source-image ../dataset/P8250008.JPG --chart-crop ../runs/inference/crops/P8250008_chart_0.jpg --output-name sample
 coral-thesis phase2-calibrate-batch --config configs/base.yaml --source-dir ../dataset --crops-dir ../runs/inference/crops --crop-glob 'P8250008_chart_0.jpg' --report-name sample_batch
+coral-thesis phase2-evaluate-manifest --config configs/base.yaml --report-name phase2_baseline
 ```
 
 Each Phase 2 run now saves:
@@ -123,6 +123,10 @@ Each Phase 2 run now saves:
 - batch-level summaries for calibration quality, normalization strategy counts, unreadable inputs, and timeout failures
 
 Batch calibration is now fail-fast per sample through `phase2.sample_timeout_seconds`, so one unstable image does not stall the whole run.
+
+Curated evaluation now lives in `configs/phase2_evaluation_manifest.yaml`.
+The manifest is intended to hold a small, stable mix of known-good and known-bad cases so Phase 2 can be regression-checked before Phase 3 work begins.
+Evaluation reports are written to `artifacts/reports/phase2`.
 
 ## Next Build Steps
 

@@ -48,6 +48,8 @@ phase1:
 phase2:
   output_dir: artifacts/outputs/phase2
   baseline_profile_path: artifacts/outputs/phase2/baseline_profile.json
+  evaluation_manifest_path: configs/phase2_evaluation_manifest.yaml
+  evaluation_reports_dir: artifacts/reports/phase2
   patch_rows: 6
   patch_cols: 4
   cell_sample_ratio: 0.5

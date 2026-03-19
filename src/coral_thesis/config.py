@@ -73,6 +73,8 @@ class Phase1Config:
 class Phase2Config:
     output_dir: Path
     baseline_profile_path: Path
+    evaluation_manifest_path: Path
+    evaluation_reports_dir: Path
     patch_rows: int
     patch_cols: int
     cell_sample_ratio: float
@@ -101,6 +103,7 @@ class PipelineConfig:
             self.phase1.training_dir,
             self.phase1.inference_dir,
             self.phase2.output_dir,
+            self.phase2.evaluation_reports_dir,
         ):
             directory.mkdir(parents=True, exist_ok=True)
 
@@ -166,6 +169,11 @@ class PipelineConfig:
             issues.append("phase2.min_patch_count must be a positive integer.")
         if self.phase2.method not in {"linear"}:
             issues.append("phase2.method currently supports only 'linear'.")
+        if not self.phase2.evaluation_manifest_path.exists():
+            issues.append(
+                "phase2.evaluation_manifest_path does not exist: "
+                f"{self.phase2.evaluation_manifest_path}"
+            )
         if (
             self.phase2.sample_timeout_seconds is not None
             and self.phase2.sample_timeout_seconds <= 0
@@ -290,6 +298,14 @@ def load_config(config_path: str | Path) -> PipelineConfig:
         ),
         baseline_profile_path=_resolve_path(
             phase2_raw.get("baseline_profile_path", "artifacts/outputs/phase2/baseline_profile.json"),
+            project_root,
+        ),
+        evaluation_manifest_path=_resolve_path(
+            phase2_raw.get("evaluation_manifest_path", "configs/phase2_evaluation_manifest.yaml"),
+            project_root,
+        ),
+        evaluation_reports_dir=_resolve_path(
+            phase2_raw.get("evaluation_reports_dir", "artifacts/reports/phase2"),
             project_root,
         ),
         patch_rows=int(phase2_raw.get("patch_rows", 6)),

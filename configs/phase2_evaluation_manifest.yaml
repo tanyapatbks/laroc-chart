@@ -1,0 +1,33 @@
+source_dir: ../../dataset
+crops_dir: ../../runs/inference/crops
+
+cases:
+  - case_id: stable_p8250008
+    source_image: P8250008.JPG
+    chart_crop: P8250008_chart_0.jpg
+    expected_outcome: success
+    tags: [good, baseline]
+    notes: Known stable sample with a valid crop and improved patch error.
+
+  - case_id: stable_p8250009
+    source_image: P8250009.JPG
+    chart_crop: P8250009_chart_0.jpg
+    expected_outcome: success
+    tags: [good, baseline]
+    notes: Second stable sample used to avoid relying on a single-image baseline.
+
+  - case_id: missing_crop_p8250038
+    source_image: P8250038.JPG
+    chart_crop: P8250038_chart_0.jpg
+    expected_outcome: failure
+    expected_failure_type: unreadable_chart_crop
+    tags: [bad, missing-crop]
+    notes: Source image exists but the expected chart crop is absent from the current crop directory.
+
+  - case_id: missing_crop_p8250095
+    source_image: P8250095.JPG
+    chart_crop: P8250095_chart_0.jpg
+    expected_outcome: failure
+    expected_failure_type: unreadable_chart_crop
+    tags: [bad, missing-crop]
+    notes: Second missing-crop case used to make failure expectations deterministic in the starter manifest.

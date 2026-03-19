@@ -11,6 +11,7 @@ from typing import Callable
 
 import cv2
 import numpy as np
+import yaml
 
 from coral_thesis.config import IMAGE_SUFFIXES
 
@@ -29,12 +30,52 @@ class BaselineProfile:
         return asdict(self)
 
 
+@dataclass(frozen=True)
+class Phase2EvaluationCase:
+    case_id: str
+    source_image_path: Path
+    chart_crop_path: Path
+    expected_outcome: str
+    expected_failure_type: str | None
+    tags: tuple[str, ...]
+    notes: str | None
+
+    def to_dict(self) -> dict:
+        return {
+            "case_id": self.case_id,
+            "source_image_path": str(self.source_image_path),
+            "chart_crop_path": str(self.chart_crop_path),
+            "expected_outcome": self.expected_outcome,
+            "expected_failure_type": self.expected_failure_type,
+            "tags": list(self.tags),
+            "notes": self.notes,
+        }
+
+
+@dataclass(frozen=True)
+class Phase2EvaluationManifest:
+    manifest_path: Path
+    source_dir: Path
+    crops_dir: Path
+    cases: tuple[Phase2EvaluationCase, ...]
+
+    def to_dict(self) -> dict:
+        return {
+            "manifest_path": str(self.manifest_path),
+            "source_dir": str(self.source_dir),
+            "crops_dir": str(self.crops_dir),
+            "case_count": len(self.cases),
+            "cases": [case.to_dict() for case in self.cases],
+        }
+
+
 def _calibrate_sample_worker(payload: dict, result_queue: mp.Queue) -> None:
     try:
         phase = ColorCalibrationPhase(
             baseline_chart_path=Path(payload["baseline_chart_path"]),
             baseline_profile_path=Path(payload["baseline_profile_path"]),
             output_dir=Path(payload["output_dir"]),
+            evaluation_reports_dir=None,
             patch_rows=int(payload["patch_rows"]),
             patch_cols=int(payload["patch_cols"]),
             cell_sample_ratio=float(payload["cell_sample_ratio"]),
@@ -235,10 +276,12 @@ class ColorCalibrationPhase:
         min_patch_count: int,
         method: str = "linear",
         sample_timeout_seconds: int | None = None,
+        evaluation_reports_dir: Path | None = None,
     ) -> None:
         self.baseline_chart_path = baseline_chart_path
         self.baseline_profile_path = baseline_profile_path
         self.output_dir = output_dir
+        self.evaluation_reports_dir = evaluation_reports_dir or output_dir
         self.patch_rows = patch_rows
         self.patch_cols = patch_cols
         self.cell_sample_ratio = cell_sample_ratio
@@ -252,6 +295,8 @@ class ColorCalibrationPhase:
         )
 
     def _read_image(self, path: Path) -> np.ndarray:
+        if not path.exists() or not path.is_file():
+            raise ValueError(f"unable to read image: {path}")
         image = cv2.imread(str(path))
         if image is None:
             raise ValueError(f"unable to read image: {path}")
@@ -477,6 +522,124 @@ class ColorCalibrationPhase:
         }
         return metrics, unstable_failures
 
+    @staticmethod
+    def _resolve_manifest_reference(raw_value: str, base_dir: Path) -> Path:
+        candidate = Path(raw_value)
+        if candidate.is_absolute():
+            return candidate.resolve()
+        return (base_dir / candidate).resolve()
+
+    @staticmethod
+    def _safe_output_stem(value: str) -> str:
+        safe_chars = []
+        for char in value:
+            if char.isalnum() or char in {"-", "_"}:
+                safe_chars.append(char)
+            else:
+                safe_chars.append("_")
+        return "".join(safe_chars).strip("_") or "phase2_case"
+
+    def load_evaluation_manifest(self, manifest_path: Path) -> Phase2EvaluationManifest:
+        raw = yaml.safe_load(manifest_path.read_text(encoding="utf-8")) or {}
+        case_rows = raw.get("cases")
+        if not isinstance(case_rows, list) or not case_rows:
+            raise ValueError(f"evaluation manifest must contain a non-empty 'cases' list: {manifest_path}")
+
+        manifest_path = manifest_path.resolve()
+        manifest_dir = manifest_path.parent
+        source_dir = self._resolve_manifest_reference(str(raw.get("source_dir", ".")), manifest_dir)
+        crops_dir = self._resolve_manifest_reference(str(raw.get("crops_dir", ".")), manifest_dir)
+
+        cases: list[Phase2EvaluationCase] = []
+        seen_case_ids: set[str] = set()
+        for index, case_row in enumerate(case_rows, start=1):
+            if not isinstance(case_row, dict):
+                raise ValueError(f"evaluation case at index {index} must be a mapping")
+
+            case_id = str(case_row.get("case_id") or f"case_{index}")
+            if case_id in seen_case_ids:
+                raise ValueError(f"duplicate evaluation case_id detected: {case_id}")
+            seen_case_ids.add(case_id)
+
+            source_value = case_row.get("source_image") or case_row.get("source_image_path")
+            chart_value = case_row.get("chart_crop") or case_row.get("chart_crop_path")
+            if source_value is None or chart_value is None:
+                raise ValueError(f"evaluation case '{case_id}' must define source_image and chart_crop")
+
+            expected_outcome = str(case_row.get("expected_outcome", "success"))
+            if expected_outcome not in {"success", "failure"}:
+                raise ValueError(
+                    f"evaluation case '{case_id}' has invalid expected_outcome={expected_outcome!r}"
+                )
+
+            expected_failure_type = case_row.get("expected_failure_type")
+            if expected_failure_type is not None:
+                expected_failure_type = str(expected_failure_type)
+            if expected_failure_type is not None and expected_outcome != "failure":
+                raise ValueError(
+                    f"evaluation case '{case_id}' cannot set expected_failure_type when expected_outcome='success'"
+                )
+
+            cases.append(
+                Phase2EvaluationCase(
+                    case_id=case_id,
+                    source_image_path=self._resolve_manifest_reference(str(source_value), source_dir),
+                    chart_crop_path=self._resolve_manifest_reference(str(chart_value), crops_dir),
+                    expected_outcome=expected_outcome,
+                    expected_failure_type=expected_failure_type,
+                    tags=tuple(str(tag) for tag in case_row.get("tags", [])),
+                    notes=str(case_row["notes"]) if case_row.get("notes") is not None else None,
+                )
+            )
+
+        return Phase2EvaluationManifest(
+            manifest_path=manifest_path,
+            source_dir=source_dir,
+            crops_dir=crops_dir,
+            cases=tuple(cases),
+        )
+
+    @staticmethod
+    def _matches_expectation(
+        case: Phase2EvaluationCase,
+        actual_outcome: str,
+        failure_type: str | None,
+    ) -> bool:
+        if actual_outcome != case.expected_outcome:
+            return False
+        if actual_outcome == "failure" and case.expected_failure_type is not None:
+            return failure_type == case.expected_failure_type
+        return True
+
+    @staticmethod
+    def _evaluation_expectation_metrics(records: list[dict]) -> tuple[dict, list[dict]]:
+        matched_count = sum(1 for record in records if record["matched_expectation"])
+        unexpected_cases = [record for record in records if not record["matched_expectation"]]
+        expected_success_count = sum(1 for record in records if record["expected_outcome"] == "success")
+        expected_failure_count = len(records) - expected_success_count
+        failure_matched_count = sum(
+            1
+            for record in records
+            if record["actual_outcome"] == "failure" and record["matched_expectation"]
+        )
+        success_matched_count = sum(
+            1
+            for record in records
+            if record["actual_outcome"] == "success" and record["matched_expectation"]
+        )
+        metrics = {
+            "case_count": len(records),
+            "matched_case_count": matched_count,
+            "matched_case_ratio": float(matched_count / len(records)) if records else 0.0,
+            "unexpected_case_count": len(unexpected_cases),
+            "expected_success_count": expected_success_count,
+            "expected_failure_count": expected_failure_count,
+            "matched_success_count": success_matched_count,
+            "matched_failure_count": failure_matched_count,
+            "unexpected_case_ids": [record["case_id"] for record in unexpected_cases],
+        }
+        return metrics, unexpected_cases
+
     def _resolve_source_image(self, source_dir: Path, image_id: str) -> Path | None:
         for candidate in sorted(source_dir.iterdir()):
             if candidate.is_file() and candidate.stem == image_id and candidate.suffix in IMAGE_SUFFIXES:
@@ -688,6 +851,90 @@ class ColorCalibrationPhase:
             "success_count": len(successes),
             "failure_count": len(failures),
             "metrics": metrics,
+            "unstable_inputs": unstable_inputs,
+            "successes": successes,
+            "failures": failures,
+            "report_path": str(report_path),
+        }
+        report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+        return report
+
+    def evaluate_manifest(
+        self,
+        manifest_path: Path,
+        report_name: str = "phase2_evaluation",
+    ) -> dict:
+        manifest = self.load_evaluation_manifest(manifest_path)
+        baseline_profile = self.load_baseline_profile()
+
+        successes: list[dict] = []
+        failures: list[dict] = []
+        all_records: list[dict] = []
+
+        for case in manifest.cases:
+            try:
+                result = self._calibrate_batch_sample(
+                    source_image_path=case.source_image_path,
+                    chart_crop_path=case.chart_crop_path,
+                    output_stem=f"eval_{self._safe_output_stem(case.case_id)}",
+                    baseline_profile=baseline_profile,
+                )
+                success_record = {
+                    **result,
+                    "case_id": case.case_id,
+                    "expected_outcome": case.expected_outcome,
+                    "expected_failure_type": case.expected_failure_type,
+                    "tags": list(case.tags),
+                    "notes": case.notes,
+                    "actual_outcome": "success",
+                    "matched_expectation": self._matches_expectation(
+                        case=case,
+                        actual_outcome="success",
+                        failure_type=None,
+                    ),
+                }
+                successes.append(success_record)
+                all_records.append(success_record)
+            except Exception as exc:
+                failure_record = self._failure_record(
+                    image_id=case.source_image_path.stem,
+                    chart_crop_path=case.chart_crop_path,
+                    source_image_path=case.source_image_path,
+                    reason=str(exc),
+                )
+                failure_record.update(
+                    {
+                        "case_id": case.case_id,
+                        "expected_outcome": case.expected_outcome,
+                        "expected_failure_type": case.expected_failure_type,
+                        "tags": list(case.tags),
+                        "notes": case.notes,
+                        "actual_outcome": "failure",
+                    }
+                )
+                failure_record["matched_expectation"] = self._matches_expectation(
+                    case=case,
+                    actual_outcome="failure",
+                    failure_type=failure_record["failure_type"],
+                )
+                failures.append(failure_record)
+                all_records.append(failure_record)
+
+        metrics, unstable_inputs = self._batch_metrics(successes, failures)
+        expectation_metrics, unexpected_cases = self._evaluation_expectation_metrics(all_records)
+        report_dir = self.evaluation_reports_dir
+        report_dir.mkdir(parents=True, exist_ok=True)
+        report_path = report_dir / f"{report_name}.json"
+        report = {
+            "manifest": manifest.to_dict(),
+            "attempted_count": len(manifest.cases),
+            "success_count": len(successes),
+            "failure_count": len(failures),
+            "metrics": {
+                **metrics,
+                "expectation": expectation_metrics,
+            },
+            "unexpected_cases": unexpected_cases,
             "unstable_inputs": unstable_inputs,
             "successes": successes,
             "failures": failures,
