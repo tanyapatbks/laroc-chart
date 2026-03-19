@@ -42,6 +42,11 @@ def build_parser() -> argparse.ArgumentParser:
         "phase1-train",
         help="Prepare and train the Phase 1 chart detector.",
     )
+    phase1_train = subparsers.choices["phase1-train"]
+    phase1_train.add_argument("--epochs", type=int, help="Override training epochs for this run.")
+    phase1_train.add_argument("--batch-size", type=int, help="Override batch size for this run.")
+    phase1_train.add_argument("--image-size", type=int, help="Override image size for this run.")
+    phase1_train.add_argument("--run-name", help="Override the training run name for this run.")
     phase1_infer = subparsers.add_parser(
         "phase1-infer",
         help="Run Phase 1 inference using configured chart detector weights.",
@@ -126,6 +131,7 @@ def main() -> None:
             class_name=config.phase1.class_name,
             val_split=config.phase1.val_split,
             seed=config.phase1.seed,
+            excluded_image_ids=config.phase1.excluded_image_ids,
             use_symlinks=config.phase1.use_symlinks,
             skip_unlabeled_images=config.phase1.skip_unlabeled_images,
         )
@@ -143,21 +149,28 @@ def main() -> None:
             class_name=config.phase1.class_name,
             val_split=config.phase1.val_split,
             seed=config.phase1.seed,
+            excluded_image_ids=config.phase1.excluded_image_ids,
             use_symlinks=config.phase1.use_symlinks,
             skip_unlabeled_images=config.phase1.skip_unlabeled_images,
         )
         trainer = ChartDetectionTrainer(
             backbone_path=config.models.detection_backbone,
             training_dir=config.phase1.training_dir,
-            run_name=config.phase1.train.run_name,
-            image_size=config.runtime.image_size,
-            batch_size=config.phase1.train.batch_size,
-            epochs=config.phase1.train.epochs,
+            run_name=args.run_name or config.phase1.train.run_name,
+            image_size=args.image_size or config.runtime.image_size,
+            batch_size=args.batch_size or config.phase1.train.batch_size,
+            epochs=args.epochs or config.phase1.train.epochs,
             patience=config.phase1.train.patience,
             seed=config.phase1.seed,
             augment=config.phase1.train.augment,
             workers=config.phase1.train.workers,
             plots=config.phase1.train.plots,
+            prewarm_font_cache=config.phase1.train.prewarm_font_cache,
+            prewarm_dataset=config.phase1.train.prewarm_dataset,
+            drop_corrupt_samples=config.phase1.train.drop_corrupt_samples,
+            sample_timeout_seconds=config.phase1.train.sample_timeout_seconds,
+            warmup_workers=config.phase1.train.warmup_workers,
+            warmup_log_interval=config.phase1.train.warmup_log_interval,
             device=config.runtime.device,
         )
         run_dir = trainer.run(prepared)

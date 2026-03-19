@@ -71,8 +71,11 @@ Phase 1 rebuilds chart detection in four explicit steps:
    Inspect the dataset, count images/labels, and flag missing or invalid annotations.
 2. Preparation
    Build a clean YOLO dataset split under `artifacts/outputs/phase1/dataset`.
+   V2 supports both symlink-based and materialized datasets; the active mode is controlled from config.
 3. Training
    Train the detector from the configured YOLO backbone.
+   V2 prewarms font lookup and image/label verification first so the initial run does not appear to hang.
+   Samples that exceed the configured verification timeout can be dropped automatically before YOLO training starts.
 4. Inference
    Run chart detection and crop extraction using trained weights.
 
@@ -82,6 +85,7 @@ Example commands:
 coral-thesis phase1-inventory --config configs/base.yaml
 coral-thesis phase1-prepare --config configs/base.yaml
 coral-thesis phase1-train --config configs/base.yaml
+coral-thesis phase1-train --config configs/base.yaml --epochs 1 --image-size 320 --batch-size 4 --run-name chart_detector_smoke
 coral-thesis phase1-infer --config configs/base.yaml --source ../dataset/P8250005.JPG
 ```
 

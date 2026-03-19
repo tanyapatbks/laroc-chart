@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 import os
 import random
+import signal
 import shutil
 from collections import defaultdict
 from dataclasses import dataclass
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Sequence
 
 import cv2
@@ -120,6 +122,13 @@ class PreparedChartDataset:
             "val_count": self.val_count,
             "skipped_unlabeled_count": self.skipped_unlabeled_count,
         }
+
+
+@dataclass(frozen=True)
+class PreparedLabelPair:
+    image_path: Path
+    label_path: Path
+    split: str
 
 
 def parse_yolo_detection_label(label_path: Path) -> tuple[tuple[ChartAnnotation, ...], tuple[ChartDatasetIssue, ...]]:
@@ -295,6 +304,12 @@ def _link_or_copy(source: Path, destination: Path, use_symlinks: bool) -> None:
         except OSError:
             pass
 
+    try:
+        os.link(source, destination)
+        return
+    except OSError:
+        pass
+
     shutil.copy2(source, destination)
 
 
@@ -327,6 +342,7 @@ def prepare_chart_detection_dataset(
     class_name: str,
     val_split: float,
     seed: int,
+    excluded_image_ids: Sequence[str],
     use_symlinks: bool,
     skip_unlabeled_images: bool,
 ) -> PreparedChartDataset:
@@ -344,19 +360,32 @@ def prepare_chart_detection_dataset(
     else:
         selected_items = tuple(item for item in inventory.items if item.is_valid)
 
+    excluded_ids = set(excluded_image_ids)
+    if excluded_ids:
+        selected_items = tuple(item for item in selected_items if item.image_id not in excluded_ids)
+
     if not selected_items:
         raise ValueError("No valid Phase 1 dataset items are available for preparation.")
 
     train_items, val_items = _split_items(selected_items, val_split=val_split, seed=seed)
+    print(
+        "Preparing Phase 1 dataset "
+        f"(train={len(train_items)}, val={len(val_items)}, "
+        f"skip_unlabeled={skip_unlabeled_images}, excluded={len(excluded_ids)}, "
+        f"symlinks={use_symlinks})..."
+    )
 
     for split_name, split_items in (("train", train_items), ("val", val_items)):
-        for item in split_items:
+        for index, item in enumerate(split_items, start=1):
             destination_image = images_root / split_name / item.image_path.name
             _link_or_copy(item.image_path, destination_image, use_symlinks=use_symlinks)
 
             if item.label_path is not None:
                 destination_label = labels_root / split_name / item.label_path.name
                 _write_label_file(destination_label, item.annotations)
+
+            if index % 25 == 0 or index == len(split_items):
+                print(f"  {split_name}: prepared {index}/{len(split_items)}")
 
     data_yaml_path = dataset_root / "data.yaml"
     data_yaml = {
@@ -390,6 +419,118 @@ def prepare_chart_detection_dataset(
     )
 
 
+def _collect_prepared_label_pairs(prepared_dataset: PreparedChartDataset, split: str) -> list[PreparedLabelPair]:
+    image_dir = prepared_dataset.root_dir / "images" / split
+    label_dir = prepared_dataset.root_dir / "labels" / split
+    pairs: list[PreparedLabelPair] = []
+
+    for image_path in sorted(image_dir.iterdir()):
+        if not image_path.is_file():
+            continue
+        label_path = label_dir / f"{image_path.stem}.txt"
+        if not label_path.exists():
+            raise FileNotFoundError(
+                f"Prepared dataset is missing label for {image_path.name}: {label_path}"
+            )
+        pairs.append(PreparedLabelPair(image_path=image_path, label_path=label_path, split=split))
+
+    return pairs
+
+
+def prewarm_ultralytics_runtime(cache_dir: Path) -> None:
+    from matplotlib import font_manager
+    from ultralytics.data import utils as data_utils
+    from ultralytics.utils import checks as check_module
+
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    os.environ["MPLCONFIGDIR"] = str(cache_dir.resolve())
+
+    print("Prewarming matplotlib font cache...")
+    system_fonts = font_manager.findSystemFonts()
+    if not system_fonts:
+        raise RuntimeError("No system fonts were discovered; Ultralytics font initialization cannot proceed.")
+
+    def _safe_check_font(font: str = "Arial.ttf"):
+        target = Path(font).stem.lower()
+        for candidate in system_fonts:
+            if target in Path(candidate).stem.lower():
+                return candidate
+        return system_fonts[0]
+
+    data_utils.check_font = _safe_check_font
+    check_module.check_font = _safe_check_font
+    print(f"Font cache ready with {len(system_fonts)} system fonts.")
+
+
+def prewarm_chart_detection_dataset(
+    prepared_dataset: PreparedChartDataset,
+    num_classes: int,
+    drop_corrupt_samples: bool,
+    sample_timeout_seconds: int,
+    max_workers: int,
+    log_interval: int,
+) -> None:
+    from ultralytics.data.utils import verify_image_label
+
+    def _timeout_handler(signum, frame):
+        raise TimeoutError("sample verification timed out")
+
+    for split in ("train", "val"):
+        pairs = _collect_prepared_label_pairs(prepared_dataset, split)
+        if not pairs:
+            continue
+
+        print(f"Prewarming {split} dataset verification ({len(pairs)} images)...")
+        start = perf_counter()
+        warnings: list[str] = []
+        removed_pairs: list[PreparedLabelPair] = []
+
+        for index, pair in enumerate(pairs, start=1):
+            signal.signal(signal.SIGALRM, _timeout_handler)
+            signal.alarm(sample_timeout_seconds)
+            try:
+                _, _, _, _, _, _, _, _, corrupt_count, message = verify_image_label(
+                    (
+                        str(pair.image_path),
+                        str(pair.label_path),
+                        "",
+                        False,
+                        num_classes,
+                        0,
+                        0,
+                        False,
+                    )
+                )
+            except TimeoutError:
+                corrupt_count = 1
+                message = f"{pair.image_path}: verification exceeded {sample_timeout_seconds}s timeout"
+            finally:
+                signal.alarm(0)
+
+            if corrupt_count:
+                details = message or f"{pair.image_path} failed verification"
+                if drop_corrupt_samples:
+                    pair.image_path.unlink(missing_ok=True)
+                    pair.label_path.unlink(missing_ok=True)
+                    removed_pairs.append(pair)
+                    print(f"  {split}: removed corrupt sample {pair.image_path.name}")
+                    print(f"    reason: {details}")
+                else:
+                    warnings.append(details)
+            elif message:
+                warnings.append(message)
+
+            if index % log_interval == 0 or index == len(pairs):
+                elapsed = perf_counter() - start
+                print(f"  {split}: verified {index}/{len(pairs)} in {elapsed:.1f}s")
+
+        if removed_pairs:
+            print(f"  {split}: removed {len(removed_pairs)} corrupt samples before training")
+        if warnings:
+            sample = "\n".join(f"- {warning}" for warning in warnings[:10])
+            print(f"  {split}: warnings during verification:\n{sample}")
+
+
 class ChartDetectionTrainer:
     def __init__(
         self,
@@ -404,6 +545,12 @@ class ChartDetectionTrainer:
         augment: bool,
         workers: int,
         plots: bool,
+        prewarm_font_cache: bool,
+        prewarm_dataset: bool,
+        drop_corrupt_samples: bool,
+        sample_timeout_seconds: int,
+        warmup_workers: int,
+        warmup_log_interval: int,
         device: str,
     ) -> None:
         self.backbone_path = backbone_path
@@ -417,6 +564,12 @@ class ChartDetectionTrainer:
         self.augment = augment
         self.workers = workers
         self.plots = plots
+        self.prewarm_font_cache = prewarm_font_cache
+        self.prewarm_dataset = prewarm_dataset
+        self.drop_corrupt_samples = drop_corrupt_samples
+        self.sample_timeout_seconds = sample_timeout_seconds
+        self.warmup_workers = warmup_workers
+        self.warmup_log_interval = warmup_log_interval
         self.device = device
 
     def run(self, prepared_dataset: PreparedChartDataset) -> Path:
@@ -428,7 +581,19 @@ class ChartDetectionTrainer:
         self.training_dir.mkdir(parents=True, exist_ok=True)
         matplotlib_dir = self.training_dir / ".matplotlib"
         matplotlib_dir.mkdir(parents=True, exist_ok=True)
-        os.environ.setdefault("MPLCONFIGDIR", str(matplotlib_dir))
+        os.environ["MPLCONFIGDIR"] = str(matplotlib_dir.resolve())
+
+        if self.prewarm_font_cache:
+            prewarm_ultralytics_runtime(matplotlib_dir)
+        if self.prewarm_dataset:
+            prewarm_chart_detection_dataset(
+                prepared_dataset=prepared_dataset,
+                num_classes=1,
+                drop_corrupt_samples=self.drop_corrupt_samples,
+                sample_timeout_seconds=self.sample_timeout_seconds,
+                max_workers=self.warmup_workers,
+                log_interval=self.warmup_log_interval,
+            )
 
         model = YOLO(str(self.backbone_path))
         model.train(

@@ -47,6 +47,12 @@ class Phase1TrainConfig:
     augment: bool
     workers: int
     plots: bool
+    prewarm_font_cache: bool
+    prewarm_dataset: bool
+    drop_corrupt_samples: bool
+    sample_timeout_seconds: int
+    warmup_workers: int
+    warmup_log_interval: int
 
 
 @dataclass(frozen=True)
@@ -57,6 +63,7 @@ class Phase1Config:
     inference_dir: Path
     val_split: float
     seed: int
+    excluded_image_ids: tuple[str, ...]
     use_symlinks: bool
     skip_unlabeled_images: bool
     train: Phase1TrainConfig
@@ -129,6 +136,12 @@ class PipelineConfig:
             issues.append("phase1.train.patience must be zero or greater.")
         if self.phase1.train.workers < 0:
             issues.append("phase1.train.workers must be zero or greater.")
+        if self.phase1.train.warmup_workers <= 0:
+            issues.append("phase1.train.warmup_workers must be a positive integer.")
+        if self.phase1.train.warmup_log_interval <= 0:
+            issues.append("phase1.train.warmup_log_interval must be a positive integer.")
+        if self.phase1.train.sample_timeout_seconds <= 0:
+            issues.append("phase1.train.sample_timeout_seconds must be a positive integer.")
         if not self.phase1.class_name:
             issues.append("phase1.class_name must not be empty.")
 
@@ -223,6 +236,7 @@ def load_config(config_path: str | Path) -> PipelineConfig:
         ),
         val_split=float(phase1_raw.get("val_split", 0.2)),
         seed=int(phase1_raw.get("seed", 42)),
+        excluded_image_ids=tuple(str(value) for value in phase1_raw.get("excluded_image_ids", [])),
         use_symlinks=bool(phase1_raw.get("use_symlinks", True)),
         skip_unlabeled_images=bool(phase1_raw.get("skip_unlabeled_images", True)),
         train=Phase1TrainConfig(
@@ -233,6 +247,12 @@ def load_config(config_path: str | Path) -> PipelineConfig:
             augment=bool(phase1_train_raw.get("augment", True)),
             workers=int(phase1_train_raw.get("workers", 0)),
             plots=bool(phase1_train_raw.get("plots", False)),
+            prewarm_font_cache=bool(phase1_train_raw.get("prewarm_font_cache", True)),
+            prewarm_dataset=bool(phase1_train_raw.get("prewarm_dataset", True)),
+            drop_corrupt_samples=bool(phase1_train_raw.get("drop_corrupt_samples", True)),
+            sample_timeout_seconds=int(phase1_train_raw.get("sample_timeout_seconds", 15)),
+            warmup_workers=int(phase1_train_raw.get("warmup_workers", 1)),
+            warmup_log_interval=int(phase1_train_raw.get("warmup_log_interval", 1)),
         ),
     )
 

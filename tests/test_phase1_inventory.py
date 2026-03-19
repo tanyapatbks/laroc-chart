@@ -66,6 +66,7 @@ class Phase1InventoryTests(unittest.TestCase):
                 class_name="chart",
                 val_split=0.34,
                 seed=7,
+                excluded_image_ids=(),
                 use_symlinks=False,
                 skip_unlabeled_images=True,
             )
@@ -78,6 +79,33 @@ class Phase1InventoryTests(unittest.TestCase):
             self.assertEqual(len(manifest["train_image_ids"]) + len(manifest["val_image_ids"]), 3)
             self.assertTrue((output_dir / "images" / "train").exists())
             self.assertTrue((output_dir / "labels" / "val").exists())
+
+    def test_preparation_respects_excluded_image_ids(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            dataset_dir = root / "dataset"
+            output_dir = root / "prepared"
+            dataset_dir.mkdir(parents=True, exist_ok=True)
+
+            for image_id in ("a", "b", "c"):
+                self._touch_image(dataset_dir / f"{image_id}.JPG")
+                self._write(dataset_dir / f"{image_id}.txt", "0 0.5 0.5 0.2 0.2\n")
+
+            inventory = build_chart_dataset_inventory(dataset_dir=dataset_dir, class_name="chart")
+            prepared = prepare_chart_detection_dataset(
+                inventory=inventory,
+                output_dir=output_dir,
+                class_name="chart",
+                val_split=0.34,
+                seed=7,
+                excluded_image_ids=("b",),
+                use_symlinks=False,
+                skip_unlabeled_images=True,
+            )
+
+            manifest = json.loads(prepared.manifest_path.read_text(encoding="utf-8"))
+            combined_ids = set(manifest["train_image_ids"]) | set(manifest["val_image_ids"])
+            self.assertNotIn("b", combined_ids)
 
 
 if __name__ == "__main__":

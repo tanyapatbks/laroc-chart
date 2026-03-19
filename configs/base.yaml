@@ -26,6 +26,8 @@ phase1:
   inference_dir: artifacts/outputs/phase1/inference
   val_split: 0.2
   seed: 42
+  excluded_image_ids:
+    - P8250005
   use_symlinks: true
   skip_unlabeled_images: true
   train:
@@ -36,3 +38,9 @@ phase1:
     augment: true
     workers: 0
     plots: false
+    prewarm_font_cache: true
+    prewarm_dataset: true
+    drop_corrupt_samples: true
+    sample_timeout_seconds: 15
+    warmup_workers: 1
+    warmup_log_interval: 1
