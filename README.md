@@ -87,11 +87,29 @@ coral-thesis phase1-prepare --config configs/base.yaml
 coral-thesis phase1-train --config configs/base.yaml
 coral-thesis phase1-train --config configs/base.yaml --epochs 1 --image-size 320 --batch-size 4 --run-name chart_detector_smoke
 coral-thesis phase1-infer --config configs/base.yaml --source ../dataset/P8250005.JPG
+coral-thesis phase2-baseline --config configs/base.yaml
+coral-thesis phase2-calibrate --config configs/base.yaml --source-image ../dataset/P8250008.JPG --chart-crop ../runs/inference/crops/P8250008_chart_0.jpg --output-name sample
 ```
 
 After `phase1-train`, `phase1-infer` will automatically look for
 `artifacts/outputs/phase1/training/chart_detector/weights/best.pt`
 if `models.chart_detector_weights` is still `null`.
+
+## Phase 2 Workflow
+
+Phase 2 rebuilds color calibration around explicit chart patch sampling:
+
+1. Analyze the baseline chart into a reusable patch profile.
+2. Sample the detected chart crop using the same grid geometry.
+3. Fit a linear color transform from crop colors to baseline colors.
+4. Apply that transform to the full source image.
+
+Example commands:
+
+```bash
+coral-thesis phase2-baseline --config configs/base.yaml
+coral-thesis phase2-calibrate --config configs/base.yaml --source-image ../dataset/P8250008.JPG --chart-crop ../runs/inference/crops/P8250008_chart_0.jpg --output-name sample
+```
 
 ## Next Build Steps
 

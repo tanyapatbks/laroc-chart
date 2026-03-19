@@ -44,3 +44,12 @@ phase1:
     sample_timeout_seconds: 15
     warmup_workers: 1
     warmup_log_interval: 1
+
+phase2:
+  output_dir: artifacts/outputs/phase2
+  baseline_profile_path: artifacts/outputs/phase2/baseline_profile.json
+  patch_rows: 6
+  patch_cols: 4
+  cell_sample_ratio: 0.5
+  min_patch_count: 8
+  method: linear

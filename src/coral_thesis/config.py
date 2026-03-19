@@ -70,6 +70,17 @@ class Phase1Config:
 
 
 @dataclass(frozen=True)
+class Phase2Config:
+    output_dir: Path
+    baseline_profile_path: Path
+    patch_rows: int
+    patch_cols: int
+    cell_sample_ratio: float
+    min_patch_count: int
+    method: str
+
+
+@dataclass(frozen=True)
 class PipelineConfig:
     project_root: Path
     config_path: Path
@@ -77,6 +88,7 @@ class PipelineConfig:
     models: ModelConfig
     runtime: RuntimeConfig
     phase1: Phase1Config
+    phase2: Phase2Config
 
     def ensure_workspace(self) -> None:
         for directory in (
@@ -87,6 +99,7 @@ class PipelineConfig:
             self.phase1.prepared_dataset_dir,
             self.phase1.training_dir,
             self.phase1.inference_dir,
+            self.phase2.output_dir,
         ):
             directory.mkdir(parents=True, exist_ok=True)
 
@@ -144,6 +157,14 @@ class PipelineConfig:
             issues.append("phase1.train.sample_timeout_seconds must be a positive integer.")
         if not self.phase1.class_name:
             issues.append("phase1.class_name must not be empty.")
+        if self.phase2.patch_rows <= 0 or self.phase2.patch_cols <= 0:
+            issues.append("phase2.patch_rows and phase2.patch_cols must be positive integers.")
+        if not 0 < self.phase2.cell_sample_ratio <= 1:
+            issues.append("phase2.cell_sample_ratio must be within the interval (0, 1].")
+        if self.phase2.min_patch_count <= 0:
+            issues.append("phase2.min_patch_count must be a positive integer.")
+        if self.phase2.method not in {"linear"}:
+            issues.append("phase2.method currently supports only 'linear'.")
 
         return issues
 
@@ -192,6 +213,7 @@ def load_config(config_path: str | Path) -> PipelineConfig:
     runtime_raw = raw.get("runtime", {})
     phase1_raw = raw.get("phase1", {})
     phase1_train_raw = phase1_raw.get("train", {})
+    phase2_raw = raw.get("phase2", {})
 
     paths = PathConfig(
         dataset_dir=_resolve_path(paths_raw["dataset_dir"], project_root),
@@ -255,6 +277,21 @@ def load_config(config_path: str | Path) -> PipelineConfig:
             warmup_log_interval=int(phase1_train_raw.get("warmup_log_interval", 1)),
         ),
     )
+    phase2 = Phase2Config(
+        output_dir=_resolve_path(
+            phase2_raw.get("output_dir", "artifacts/outputs/phase2"),
+            project_root,
+        ),
+        baseline_profile_path=_resolve_path(
+            phase2_raw.get("baseline_profile_path", "artifacts/outputs/phase2/baseline_profile.json"),
+            project_root,
+        ),
+        patch_rows=int(phase2_raw.get("patch_rows", 6)),
+        patch_cols=int(phase2_raw.get("patch_cols", 4)),
+        cell_sample_ratio=float(phase2_raw.get("cell_sample_ratio", 0.5)),
+        min_patch_count=int(phase2_raw.get("min_patch_count", 8)),
+        method=str(phase2_raw.get("method", "linear")),
+    )
 
     os.environ.setdefault("MPLCONFIGDIR", str((project_root / "artifacts" / ".matplotlib").resolve()))
 
@@ -265,4 +302,5 @@ def load_config(config_path: str | Path) -> PipelineConfig:
         models=models,
         runtime=runtime,
         phase1=phase1,
+        phase2=phase2,
     )

@@ -11,6 +11,7 @@ from coral_thesis.phases.chart_detection import (
     build_chart_dataset_inventory,
     prepare_chart_detection_dataset,
 )
+from coral_thesis.phases.color_calibration import ColorCalibrationPhase
 from coral_thesis.pipeline import CoralPipeline
 
 
@@ -55,6 +56,21 @@ def build_parser() -> argparse.ArgumentParser:
         "--source",
         required=True,
         help="Path to a source image or directory to run inference on.",
+    )
+    subparsers.add_parser(
+        "phase2-baseline",
+        help="Analyze the baseline chart and save a reusable Phase 2 calibration profile.",
+    )
+    phase2_calibrate = subparsers.add_parser(
+        "phase2-calibrate",
+        help="Calibrate a source image using a detected chart crop.",
+    )
+    phase2_calibrate.add_argument("--source-image", required=True, help="Path to the raw source image.")
+    phase2_calibrate.add_argument("--chart-crop", required=True, help="Path to the detected chart crop.")
+    phase2_calibrate.add_argument(
+        "--output-name",
+        required=True,
+        help="Filename stem for the calibrated output image inside the Phase 2 output directory.",
     )
     return parser
 
@@ -188,6 +204,40 @@ def main() -> None:
             output_dir=config.phase1.inference_dir,
         )
         print(f"Processed {len(results)} source images.")
+        return
+
+    if args.command == "phase2-baseline":
+        phase = ColorCalibrationPhase(
+            baseline_chart_path=config.paths.baseline_chart_path,
+            baseline_profile_path=config.phase2.baseline_profile_path,
+            output_dir=config.phase2.output_dir,
+            patch_rows=config.phase2.patch_rows,
+            patch_cols=config.phase2.patch_cols,
+            cell_sample_ratio=config.phase2.cell_sample_ratio,
+            min_patch_count=config.phase2.min_patch_count,
+            method=config.phase2.method,
+        )
+        profile = phase.build_and_save_baseline_profile()
+        _print_json(profile.to_dict())
+        return
+
+    if args.command == "phase2-calibrate":
+        phase = ColorCalibrationPhase(
+            baseline_chart_path=config.paths.baseline_chart_path,
+            baseline_profile_path=config.phase2.baseline_profile_path,
+            output_dir=config.phase2.output_dir,
+            patch_rows=config.phase2.patch_rows,
+            patch_cols=config.phase2.patch_cols,
+            cell_sample_ratio=config.phase2.cell_sample_ratio,
+            min_patch_count=config.phase2.min_patch_count,
+            method=config.phase2.method,
+        )
+        result = phase.calibrate_single(
+            source_image_path=Path(args.source_image),
+            chart_crop_path=Path(args.chart_crop),
+            output_stem=args.output_name,
+        )
+        _print_json(result)
         return
 
     raise RuntimeError(f"Unsupported command: {args.command}")
