@@ -78,6 +78,7 @@ class Phase2Config:
     cell_sample_ratio: float
     min_patch_count: int
     method: str
+    sample_timeout_seconds: int | None
 
 
 @dataclass(frozen=True)
@@ -165,6 +166,11 @@ class PipelineConfig:
             issues.append("phase2.min_patch_count must be a positive integer.")
         if self.phase2.method not in {"linear"}:
             issues.append("phase2.method currently supports only 'linear'.")
+        if (
+            self.phase2.sample_timeout_seconds is not None
+            and self.phase2.sample_timeout_seconds <= 0
+        ):
+            issues.append("phase2.sample_timeout_seconds must be a positive integer when set.")
 
         return issues
 
@@ -291,6 +297,11 @@ def load_config(config_path: str | Path) -> PipelineConfig:
         cell_sample_ratio=float(phase2_raw.get("cell_sample_ratio", 0.5)),
         min_patch_count=int(phase2_raw.get("min_patch_count", 8)),
         method=str(phase2_raw.get("method", "linear")),
+        sample_timeout_seconds=(
+            int(phase2_raw["sample_timeout_seconds"])
+            if phase2_raw.get("sample_timeout_seconds") is not None
+            else None
+        ),
     )
 
     os.environ.setdefault("MPLCONFIGDIR", str((project_root / "artifacts" / ".matplotlib").resolve()))

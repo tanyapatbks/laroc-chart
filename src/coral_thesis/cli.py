@@ -237,6 +237,7 @@ def main() -> None:
             cell_sample_ratio=config.phase2.cell_sample_ratio,
             min_patch_count=config.phase2.min_patch_count,
             method=config.phase2.method,
+            sample_timeout_seconds=config.phase2.sample_timeout_seconds,
         )
         profile = phase.build_and_save_baseline_profile()
         _print_json(profile.to_dict())
@@ -252,6 +253,7 @@ def main() -> None:
             cell_sample_ratio=config.phase2.cell_sample_ratio,
             min_patch_count=config.phase2.min_patch_count,
             method=config.phase2.method,
+            sample_timeout_seconds=config.phase2.sample_timeout_seconds,
         )
         result = phase.calibrate_single(
             source_image_path=Path(args.source_image),
@@ -271,6 +273,7 @@ def main() -> None:
             cell_sample_ratio=config.phase2.cell_sample_ratio,
             min_patch_count=config.phase2.min_patch_count,
             method=config.phase2.method,
+            sample_timeout_seconds=config.phase2.sample_timeout_seconds,
         )
         report = phase.calibrate_batch(
             source_dir=Path(args.source_dir),

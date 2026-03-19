@@ -104,7 +104,8 @@ Phase 2 rebuilds color calibration around explicit chart patch sampling:
 2. Sample the detected chart crop using the same grid geometry.
 3. Normalize the chart crop before sampling so perspective/skew affects the calibration less.
 4. Fit a linear color transform from crop colors to baseline colors.
-4. Apply that transform to the full source image.
+5. Apply that transform to the full source image.
+6. Record before/after patch error metrics so every calibration run is measurable.
 
 Example commands:
 
@@ -113,6 +114,15 @@ coral-thesis phase2-baseline --config configs/base.yaml
 coral-thesis phase2-calibrate --config configs/base.yaml --source-image ../dataset/P8250008.JPG --chart-crop ../runs/inference/crops/P8250008_chart_0.jpg --output-name sample
 coral-thesis phase2-calibrate-batch --config configs/base.yaml --source-dir ../dataset --crops-dir ../runs/inference/crops --crop-glob 'P8250008_chart_0.jpg' --report-name sample_batch
 ```
+
+Each Phase 2 run now saves:
+
+- calibrated output images
+- normalized chart views used for patch sampling
+- per-image quality metrics (`before`, `after`, deltas, improvement ratio)
+- batch-level summaries for calibration quality, normalization strategy counts, unreadable inputs, and timeout failures
+
+Batch calibration is now fail-fast per sample through `phase2.sample_timeout_seconds`, so one unstable image does not stall the whole run.
 
 ## Next Build Steps
 

@@ -2,6 +2,7 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import cv2
 import numpy as np
@@ -162,12 +163,17 @@ class Phase2CalibrationTests(unittest.TestCase):
             corrected = cv2.imread(result["output_path"])
             self.assertIsNotNone(corrected)
             self.assertTrue(Path(result["normalized_chart_path"]).exists())
+            self.assertTrue(result["quality_metrics"]["improved"])
+            self.assertLess(
+                result["quality_metrics"]["after"]["mae"],
+                result["quality_metrics"]["before"]["mae"],
+            )
             self.assertLess(
                 np.mean((baseline.astype(np.float32) - corrected.astype(np.float32)) ** 2),
                 np.mean((baseline.astype(np.float32) - source.astype(np.float32)) ** 2),
             )
 
-    def test_phase2_batch_calibration_generates_report(self) -> None:
+    def test_phase2_batch_calibration_generates_report_with_metrics(self) -> None:
         with tempfile.TemporaryDirectory() as tmp_dir:
             root = Path(tmp_dir)
             source_dir = root / "sources"
@@ -187,6 +193,9 @@ class Phase2CalibrationTests(unittest.TestCase):
                 cv2.imwrite(str(source_dir / f"{image_id}.png"), source)
                 cv2.imwrite(str(crops_dir / f"{image_id}_chart_0.jpg"), crop)
 
+            cv2.imwrite(str(source_dir / "bad.png"), self._apply_cast(baseline))
+            (crops_dir / "bad_chart_0.jpg").write_text("not-an-image", encoding="utf-8")
+
             phase = ColorCalibrationPhase(
                 baseline_chart_path=baseline_chart_path,
                 baseline_profile_path=output_dir / "baseline_profile.json",
@@ -205,10 +214,66 @@ class Phase2CalibrationTests(unittest.TestCase):
             )
 
             self.assertEqual(report["success_count"], 2)
-            self.assertEqual(report["failure_count"], 0)
+            self.assertEqual(report["failure_count"], 1)
+            self.assertEqual(report["metrics"]["quality"]["sample_count"], 2)
+            self.assertEqual(report["metrics"]["quality"]["improved_count"], 2)
+            self.assertLess(
+                report["metrics"]["quality"]["mean_after_mae"],
+                report["metrics"]["quality"]["mean_before_mae"],
+            )
+            self.assertEqual(report["metrics"]["failure_type_counts"]["unreadable_chart_crop"], 1)
+            self.assertEqual(report["metrics"]["unstable_input_count"], 1)
+            self.assertEqual(len(report["unstable_inputs"]), 1)
             self.assertTrue(Path(report["report_path"]).exists())
             saved_report = json.loads(Path(report["report_path"]).read_text(encoding="utf-8"))
-            self.assertEqual(saved_report["attempted_count"], 2)
+            self.assertEqual(saved_report["attempted_count"], 3)
+            self.assertEqual(saved_report["failures"][0]["failure_type"], "unreadable_chart_crop")
+
+    def test_phase2_batch_classifies_timeout_failures(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            source_dir = root / "sources"
+            crops_dir = root / "crops"
+            output_dir = root / "phase2"
+            source_dir.mkdir(parents=True, exist_ok=True)
+            crops_dir.mkdir(parents=True, exist_ok=True)
+            output_dir.mkdir(parents=True, exist_ok=True)
+
+            baseline = self._make_chart()
+            baseline_chart_path = root / "baseline.png"
+            cv2.imwrite(str(baseline_chart_path), baseline)
+            cv2.imwrite(str(source_dir / "a.png"), self._apply_cast(baseline))
+            cv2.imwrite(str(crops_dir / "a_chart_0.jpg"), self._perspective_crop(baseline))
+
+            phase = ColorCalibrationPhase(
+                baseline_chart_path=baseline_chart_path,
+                baseline_profile_path=output_dir / "baseline_profile.json",
+                output_dir=output_dir,
+                patch_rows=6,
+                patch_cols=4,
+                cell_sample_ratio=0.5,
+                min_patch_count=8,
+                method="linear",
+                sample_timeout_seconds=1,
+            )
+            phase.build_and_save_baseline_profile()
+
+            with mock.patch.object(
+                phase,
+                "_calibrate_batch_sample",
+                side_effect=TimeoutError("Phase 2 calibration for a_chart_0.jpg timed out after 1 seconds"),
+            ):
+                report = phase.calibrate_batch(
+                    source_dir=source_dir,
+                    crops_dir=crops_dir,
+                    report_name="timeout_report",
+                )
+
+            self.assertEqual(report["success_count"], 0)
+            self.assertEqual(report["failure_count"], 1)
+            self.assertEqual(report["metrics"]["failure_type_counts"]["sample_timeout"], 1)
+            self.assertEqual(report["metrics"]["unstable_input_count"], 1)
+            self.assertEqual(report["unstable_inputs"][0]["failure_type"], "sample_timeout")
 
 
 if __name__ == "__main__":
