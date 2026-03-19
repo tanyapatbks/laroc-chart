@@ -34,3 +34,13 @@
 5. Research Workflow
    Add experiment reporting and reproducibility controls.
 
+## Phase 1 Scope
+
+Phase 1 in V2 is split into distinct responsibilities:
+
+- inventory: inspect the raw dataset and validate YOLO chart annotations
+- preparation: create deterministic train/val splits and write a fresh `data.yaml`
+- training: run YOLO training from the configured detection backbone
+- inference: run detection and export chart crops plus visualization artifacts
+
+This keeps data quality checks separate from model execution and makes the chart detection phase reproducible.

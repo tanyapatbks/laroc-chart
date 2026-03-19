@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass
+import os
 from pathlib import Path
 from typing import Any
 
@@ -38,12 +39,37 @@ class RuntimeConfig:
 
 
 @dataclass(frozen=True)
+class Phase1TrainConfig:
+    run_name: str
+    epochs: int
+    batch_size: int
+    patience: int
+    augment: bool
+    workers: int
+    plots: bool
+
+
+@dataclass(frozen=True)
+class Phase1Config:
+    class_name: str
+    prepared_dataset_dir: Path
+    training_dir: Path
+    inference_dir: Path
+    val_split: float
+    seed: int
+    use_symlinks: bool
+    skip_unlabeled_images: bool
+    train: Phase1TrainConfig
+
+
+@dataclass(frozen=True)
 class PipelineConfig:
     project_root: Path
     config_path: Path
     paths: PathConfig
     models: ModelConfig
     runtime: RuntimeConfig
+    phase1: Phase1Config
 
     def ensure_workspace(self) -> None:
         for directory in (
@@ -51,6 +77,9 @@ class PipelineConfig:
             self.paths.outputs_dir,
             self.paths.temp_dir,
             self.paths.reports_dir,
+            self.phase1.prepared_dataset_dir,
+            self.phase1.training_dir,
+            self.phase1.inference_dir,
         ):
             directory.mkdir(parents=True, exist_ok=True)
 
@@ -87,6 +116,21 @@ class PipelineConfig:
         ):
             if path is not None and not path.exists():
                 issues.append(f"{label} does not exist: {path}")
+
+        if not 0 < self.phase1.val_split < 1:
+            issues.append("phase1.val_split must be within the interval (0, 1).")
+        if self.phase1.seed < 0:
+            issues.append("phase1.seed must be non-negative.")
+        if self.phase1.train.epochs <= 0:
+            issues.append("phase1.train.epochs must be a positive integer.")
+        if self.phase1.train.batch_size <= 0:
+            issues.append("phase1.train.batch_size must be a positive integer.")
+        if self.phase1.train.patience < 0:
+            issues.append("phase1.train.patience must be zero or greater.")
+        if self.phase1.train.workers < 0:
+            issues.append("phase1.train.workers must be zero or greater.")
+        if not self.phase1.class_name:
+            issues.append("phase1.class_name must not be empty.")
 
         return issues
 
@@ -133,6 +177,8 @@ def load_config(config_path: str | Path) -> PipelineConfig:
     paths_raw = raw.get("paths", {})
     models_raw = raw.get("models", {})
     runtime_raw = raw.get("runtime", {})
+    phase1_raw = raw.get("phase1", {})
+    phase1_train_raw = phase1_raw.get("train", {})
 
     paths = PathConfig(
         dataset_dir=_resolve_path(paths_raw["dataset_dir"], project_root),
@@ -161,6 +207,36 @@ def load_config(config_path: str | Path) -> PipelineConfig:
         image_size=int(runtime_raw.get("image_size", 640)),
         device=str(runtime_raw.get("device", "cpu")),
     )
+    phase1 = Phase1Config(
+        class_name=str(phase1_raw.get("class_name", "chart")),
+        prepared_dataset_dir=_resolve_path(
+            phase1_raw.get("prepared_dataset_dir", "artifacts/outputs/phase1/dataset"),
+            project_root,
+        ),
+        training_dir=_resolve_path(
+            phase1_raw.get("training_dir", "artifacts/outputs/phase1/training"),
+            project_root,
+        ),
+        inference_dir=_resolve_path(
+            phase1_raw.get("inference_dir", "artifacts/outputs/phase1/inference"),
+            project_root,
+        ),
+        val_split=float(phase1_raw.get("val_split", 0.2)),
+        seed=int(phase1_raw.get("seed", 42)),
+        use_symlinks=bool(phase1_raw.get("use_symlinks", True)),
+        skip_unlabeled_images=bool(phase1_raw.get("skip_unlabeled_images", True)),
+        train=Phase1TrainConfig(
+            run_name=str(phase1_train_raw.get("run_name", "chart_detector")),
+            epochs=int(phase1_train_raw.get("epochs", 10)),
+            batch_size=int(phase1_train_raw.get("batch_size", 8)),
+            patience=int(phase1_train_raw.get("patience", 20)),
+            augment=bool(phase1_train_raw.get("augment", True)),
+            workers=int(phase1_train_raw.get("workers", 0)),
+            plots=bool(phase1_train_raw.get("plots", False)),
+        ),
+    )
+
+    os.environ.setdefault("MPLCONFIGDIR", str((project_root / "artifacts" / ".matplotlib").resolve()))
 
     return PipelineConfig(
         project_root=project_root,
@@ -168,5 +244,5 @@ def load_config(config_path: str | Path) -> PipelineConfig:
         paths=paths,
         models=models,
         runtime=runtime,
+        phase1=phase1,
     )
-

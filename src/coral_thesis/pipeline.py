@@ -32,6 +32,9 @@ class CoralPipeline:
             f"dataset_dir: {self.config.paths.dataset_dir}",
             f"baseline_chart_path: {self.config.paths.baseline_chart_path}",
             f"source_images_detected: {len(source_images)}",
+            f"phase1_prepared_dataset_dir: {self.config.phase1.prepared_dataset_dir}",
+            f"phase1_training_dir: {self.config.phase1.training_dir}",
+            f"phase1_inference_dir: {self.config.phase1.inference_dir}",
             "",
             "Phases",
             "Phase 1: Chart detection",
@@ -43,9 +46,9 @@ class CoralPipeline:
             "",
             "Status",
             "- Foundation scaffold ready",
+            "- Phase 1 inventory, preparation, training, and inference commands implemented",
             "- Phase 4 and Phase 6 deterministic logic implemented",
-            "- Phase 1, Phase 3, and Phase 5 wrappers prepared",
+            "- Phase 3 and Phase 5 wrappers prepared",
             "- Phase 2 rewrite intentionally left for dedicated implementation",
         ]
         return "\n".join(lines)
-

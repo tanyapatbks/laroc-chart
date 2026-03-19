@@ -19,3 +19,20 @@ runtime:
   image_size: 640
   device: cpu
 
+phase1:
+  class_name: chart
+  prepared_dataset_dir: artifacts/outputs/phase1/dataset
+  training_dir: artifacts/outputs/phase1/training
+  inference_dir: artifacts/outputs/phase1/inference
+  val_split: 0.2
+  seed: 42
+  use_symlinks: true
+  skip_unlabeled_images: true
+  train:
+    run_name: chart_detector
+    epochs: 10
+    batch_size: 8
+    patience: 20
+    augment: true
+    workers: 0
+    plots: false

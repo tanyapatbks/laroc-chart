@@ -33,6 +33,7 @@ This first V2 scaffold provides:
 - artifact/workspace bootstrapping
 - a clean package layout
 - implemented phase contracts
+- Phase 1 dataset inventory, validation, preparation, training, and inference entrypoints
 - deterministic category mapping
 - a reusable feature extraction module
 - phase wrappers for detection/segmentation/model inference
@@ -58,12 +59,39 @@ pip install -e .
 coral-thesis validate-config --config configs/base.yaml
 coral-thesis bootstrap --config configs/base.yaml
 coral-thesis describe-pipeline --config configs/base.yaml
+coral-thesis phase1-inventory --config configs/base.yaml
+coral-thesis phase1-prepare --config configs/base.yaml
 ```
+
+## Phase 1 Workflow
+
+Phase 1 rebuilds chart detection in four explicit steps:
+
+1. Inventory
+   Inspect the dataset, count images/labels, and flag missing or invalid annotations.
+2. Preparation
+   Build a clean YOLO dataset split under `artifacts/outputs/phase1/dataset`.
+3. Training
+   Train the detector from the configured YOLO backbone.
+4. Inference
+   Run chart detection and crop extraction using trained weights.
+
+Example commands:
+
+```bash
+coral-thesis phase1-inventory --config configs/base.yaml
+coral-thesis phase1-prepare --config configs/base.yaml
+coral-thesis phase1-train --config configs/base.yaml
+coral-thesis phase1-infer --config configs/base.yaml --source ../dataset/P8250005.JPG
+```
+
+After `phase1-train`, `phase1-infer` will automatically look for
+`artifacts/outputs/phase1/training/chart_detector/weights/best.pt`
+if `models.chart_detector_weights` is still `null`.
 
 ## Next Build Steps
 
 1. Rewrite Phase 2 color calibration with explicit chart patch correspondence.
-2. Add dataset manifest generation and label validation.
-3. Add training and evaluation entrypoints per phase.
+2. Add dataset manifest generation and label validation for later phases.
+3. Add training and evaluation entrypoints per remaining phase.
 4. Add experiment tracking and metrics reporting.
-

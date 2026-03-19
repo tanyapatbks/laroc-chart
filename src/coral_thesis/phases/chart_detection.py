@@ -1,20 +1,477 @@
 from __future__ import annotations
 
+import json
+import os
+import random
+import shutil
 from collections import defaultdict
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
 
 import cv2
+import yaml
 
+from coral_thesis.config import IMAGE_SUFFIXES
 from coral_thesis.domain import DetectionResult
+
+BOUNDARY_EPSILON = 1e-6
+
+
+@dataclass(frozen=True)
+class ChartAnnotation:
+    class_id: int
+    x_center: float
+    y_center: float
+    width: float
+    height: float
+
+    def as_yolo_row(self) -> str:
+        return (
+            f"{self.class_id} "
+            f"{self.x_center:.6f} "
+            f"{self.y_center:.6f} "
+            f"{self.width:.6f} "
+            f"{self.height:.6f}"
+        )
+
+
+@dataclass(frozen=True)
+class ChartDatasetIssue:
+    path: Path
+    message: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {"path": str(self.path), "message": self.message}
+
+
+@dataclass(frozen=True)
+class ChartDatasetItem:
+    image_path: Path
+    label_path: Path | None
+    annotations: tuple[ChartAnnotation, ...]
+    issues: tuple[ChartDatasetIssue, ...]
+
+    @property
+    def image_id(self) -> str:
+        return self.image_path.stem
+
+    @property
+    def is_labeled(self) -> bool:
+        return self.label_path is not None
+
+    @property
+    def is_valid(self) -> bool:
+        return len(self.issues) == 0
+
+
+@dataclass(frozen=True)
+class ChartDatasetInventory:
+    dataset_dir: Path
+    class_name: str
+    items: tuple[ChartDatasetItem, ...]
+    orphan_label_paths: tuple[Path, ...]
+    json_annotation_paths: tuple[Path, ...]
+    issues: tuple[ChartDatasetIssue, ...]
+
+    @property
+    def labeled_items(self) -> tuple[ChartDatasetItem, ...]:
+        return tuple(item for item in self.items if item.is_labeled)
+
+    @property
+    def unlabeled_items(self) -> tuple[ChartDatasetItem, ...]:
+        return tuple(item for item in self.items if not item.is_labeled)
+
+    @property
+    def valid_labeled_items(self) -> tuple[ChartDatasetItem, ...]:
+        return tuple(item for item in self.labeled_items if item.is_valid and item.annotations)
+
+    def summary(self) -> dict[str, Any]:
+        return {
+            "dataset_dir": str(self.dataset_dir),
+            "class_name": self.class_name,
+            "image_count": len(self.items),
+            "labeled_image_count": len(self.labeled_items),
+            "unlabeled_image_count": len(self.unlabeled_items),
+            "valid_labeled_image_count": len(self.valid_labeled_items),
+            "orphan_label_count": len(self.orphan_label_paths),
+            "json_annotation_count": len(self.json_annotation_paths),
+            "issue_count": len(self.issues),
+            "unlabeled_image_ids": [item.image_id for item in self.unlabeled_items],
+            "issues": [issue.to_dict() for issue in self.issues[:20]],
+        }
+
+
+@dataclass(frozen=True)
+class PreparedChartDataset:
+    root_dir: Path
+    data_yaml_path: Path
+    manifest_path: Path
+    train_count: int
+    val_count: int
+    skipped_unlabeled_count: int
+
+    def summary(self) -> dict[str, Any]:
+        return {
+            "root_dir": str(self.root_dir),
+            "data_yaml_path": str(self.data_yaml_path),
+            "manifest_path": str(self.manifest_path),
+            "train_count": self.train_count,
+            "val_count": self.val_count,
+            "skipped_unlabeled_count": self.skipped_unlabeled_count,
+        }
+
+
+def parse_yolo_detection_label(label_path: Path) -> tuple[tuple[ChartAnnotation, ...], tuple[ChartDatasetIssue, ...]]:
+    annotations: list[ChartAnnotation] = []
+    issues: list[ChartDatasetIssue] = []
+
+    for line_number, raw_line in enumerate(
+        label_path.read_text(encoding="utf-8").splitlines(),
+        start=1,
+    ):
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        parts = line.split()
+        if len(parts) != 5:
+            issues.append(
+                ChartDatasetIssue(
+                    path=label_path,
+                    message=f"line {line_number}: expected 5 tokens, found {len(parts)}",
+                )
+            )
+            continue
+
+        try:
+            class_id = int(parts[0])
+            x_center, y_center, width, height = (float(value) for value in parts[1:])
+        except ValueError:
+            issues.append(
+                ChartDatasetIssue(
+                    path=label_path,
+                    message=f"line {line_number}: non-numeric YOLO annotation values",
+                )
+            )
+            continue
+
+        if class_id != 0:
+            issues.append(
+                ChartDatasetIssue(
+                    path=label_path,
+                    message=f"line {line_number}: expected class id 0, found {class_id}",
+                )
+            )
+        for field_name, value in (
+            ("x_center", x_center),
+            ("y_center", y_center),
+            ("width", width),
+            ("height", height),
+        ):
+            if not (-BOUNDARY_EPSILON) <= value <= (1.0 + BOUNDARY_EPSILON):
+                issues.append(
+                    ChartDatasetIssue(
+                        path=label_path,
+                        message=f"line {line_number}: {field_name} must be within [0, 1]",
+                    )
+                )
+
+        if width <= 0 or height <= 0:
+            issues.append(
+                ChartDatasetIssue(
+                    path=label_path,
+                    message=f"line {line_number}: width and height must be positive",
+                )
+            )
+
+        if (
+            x_center - (width / 2) < -BOUNDARY_EPSILON
+            or x_center + (width / 2) > 1.0 + BOUNDARY_EPSILON
+        ):
+            issues.append(
+                ChartDatasetIssue(
+                    path=label_path,
+                    message=f"line {line_number}: x bounds exceed image extent",
+                )
+            )
+        if (
+            y_center - (height / 2) < -BOUNDARY_EPSILON
+            or y_center + (height / 2) > 1.0 + BOUNDARY_EPSILON
+        ):
+            issues.append(
+                ChartDatasetIssue(
+                    path=label_path,
+                    message=f"line {line_number}: y bounds exceed image extent",
+                )
+            )
+
+        annotations.append(
+            ChartAnnotation(
+                class_id=class_id,
+                x_center=x_center,
+                y_center=y_center,
+                width=width,
+                height=height,
+            )
+        )
+
+    if not annotations and not issues:
+        issues.append(
+            ChartDatasetIssue(
+                path=label_path,
+                message="label file is empty",
+            )
+        )
+
+    return tuple(annotations), tuple(issues)
+
+
+def build_chart_dataset_inventory(dataset_dir: Path, class_name: str = "chart") -> ChartDatasetInventory:
+    image_paths = sorted(
+        path
+        for path in dataset_dir.iterdir()
+        if path.is_file() and path.suffix in IMAGE_SUFFIXES
+    )
+    label_paths = {path.stem: path for path in dataset_dir.glob("*.txt")}
+    json_paths = tuple(sorted(dataset_dir.glob("*.json")))
+    image_stems = {path.stem for path in image_paths}
+    orphan_label_paths = tuple(sorted(path for stem, path in label_paths.items() if stem not in image_stems))
+
+    items: list[ChartDatasetItem] = []
+    issues: list[ChartDatasetIssue] = []
+
+    for image_path in image_paths:
+        label_path = label_paths.get(image_path.stem)
+        annotations: tuple[ChartAnnotation, ...] = ()
+        item_issues: tuple[ChartDatasetIssue, ...] = ()
+
+        if label_path is not None:
+            annotations, item_issues = parse_yolo_detection_label(label_path)
+            issues.extend(item_issues)
+
+        items.append(
+            ChartDatasetItem(
+                image_path=image_path,
+                label_path=label_path,
+                annotations=annotations,
+                issues=item_issues,
+            )
+        )
+
+    for label_path in orphan_label_paths:
+        issues.append(
+            ChartDatasetIssue(
+                path=label_path,
+                message="label does not have a matching image",
+            )
+        )
+
+    return ChartDatasetInventory(
+        dataset_dir=dataset_dir,
+        class_name=class_name,
+        items=tuple(items),
+        orphan_label_paths=orphan_label_paths,
+        json_annotation_paths=json_paths,
+        issues=tuple(issues),
+    )
+
+
+def _ensure_empty_directory(path: Path) -> None:
+    if path.exists():
+        shutil.rmtree(path)
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def _link_or_copy(source: Path, destination: Path, use_symlinks: bool) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists() or destination.is_symlink():
+        destination.unlink()
+
+    if use_symlinks:
+        try:
+            destination.symlink_to(source)
+            return
+        except OSError:
+            pass
+
+    shutil.copy2(source, destination)
+
+
+def _write_label_file(destination: Path, annotations: tuple[ChartAnnotation, ...]) -> None:
+    rows = [annotation.as_yolo_row() for annotation in annotations]
+    destination.write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+
+def _split_items(items: tuple[ChartDatasetItem, ...], val_split: float, seed: int) -> tuple[list[ChartDatasetItem], list[ChartDatasetItem]]:
+    ordered = list(items)
+    random.Random(seed).shuffle(ordered)
+
+    if not ordered:
+        return [], []
+
+    if len(ordered) == 1:
+        return ordered, []
+
+    val_count = max(1, int(len(ordered) * val_split))
+    val_count = min(val_count, len(ordered) - 1)
+
+    val_items = ordered[:val_count]
+    train_items = ordered[val_count:]
+    return train_items, val_items
+
+
+def prepare_chart_detection_dataset(
+    inventory: ChartDatasetInventory,
+    output_dir: Path,
+    class_name: str,
+    val_split: float,
+    seed: int,
+    use_symlinks: bool,
+    skip_unlabeled_images: bool,
+) -> PreparedChartDataset:
+    dataset_root = output_dir.resolve()
+    _ensure_empty_directory(dataset_root)
+
+    images_root = dataset_root / "images"
+    labels_root = dataset_root / "labels"
+    for split in ("train", "val"):
+        (images_root / split).mkdir(parents=True, exist_ok=True)
+        (labels_root / split).mkdir(parents=True, exist_ok=True)
+
+    if skip_unlabeled_images:
+        selected_items = inventory.valid_labeled_items
+    else:
+        selected_items = tuple(item for item in inventory.items if item.is_valid)
+
+    if not selected_items:
+        raise ValueError("No valid Phase 1 dataset items are available for preparation.")
+
+    train_items, val_items = _split_items(selected_items, val_split=val_split, seed=seed)
+
+    for split_name, split_items in (("train", train_items), ("val", val_items)):
+        for item in split_items:
+            destination_image = images_root / split_name / item.image_path.name
+            _link_or_copy(item.image_path, destination_image, use_symlinks=use_symlinks)
+
+            if item.label_path is not None:
+                destination_label = labels_root / split_name / item.label_path.name
+                _write_label_file(destination_label, item.annotations)
+
+    data_yaml_path = dataset_root / "data.yaml"
+    data_yaml = {
+        "path": str(dataset_root),
+        "train": str((images_root / "train").resolve()),
+        "val": str((images_root / "val").resolve()),
+        "names": {0: class_name},
+    }
+    data_yaml_path.write_text(yaml.safe_dump(data_yaml, sort_keys=False), encoding="utf-8")
+
+    manifest_path = dataset_root / "manifest.json"
+    manifest = {
+        "dataset_dir": str(inventory.dataset_dir),
+        "class_name": class_name,
+        "seed": seed,
+        "val_split": val_split,
+        "skip_unlabeled_images": skip_unlabeled_images,
+        "source_summary": inventory.summary(),
+        "train_image_ids": [item.image_id for item in train_items],
+        "val_image_ids": [item.image_id for item in val_items],
+    }
+    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+    return PreparedChartDataset(
+        root_dir=dataset_root,
+        data_yaml_path=data_yaml_path,
+        manifest_path=manifest_path,
+        train_count=len(train_items),
+        val_count=len(val_items),
+        skipped_unlabeled_count=len(inventory.unlabeled_items) if skip_unlabeled_images else 0,
+    )
+
+
+class ChartDetectionTrainer:
+    def __init__(
+        self,
+        backbone_path: Path,
+        training_dir: Path,
+        run_name: str,
+        image_size: int,
+        batch_size: int,
+        epochs: int,
+        patience: int,
+        seed: int,
+        augment: bool,
+        workers: int,
+        plots: bool,
+        device: str,
+    ) -> None:
+        self.backbone_path = backbone_path
+        self.training_dir = training_dir
+        self.run_name = run_name
+        self.image_size = image_size
+        self.batch_size = batch_size
+        self.epochs = epochs
+        self.patience = patience
+        self.seed = seed
+        self.augment = augment
+        self.workers = workers
+        self.plots = plots
+        self.device = device
+
+    def run(self, prepared_dataset: PreparedChartDataset) -> Path:
+        from ultralytics import YOLO
+
+        if not self.backbone_path.exists():
+            raise FileNotFoundError(f"Detection backbone not found: {self.backbone_path}")
+
+        self.training_dir.mkdir(parents=True, exist_ok=True)
+        matplotlib_dir = self.training_dir / ".matplotlib"
+        matplotlib_dir.mkdir(parents=True, exist_ok=True)
+        os.environ.setdefault("MPLCONFIGDIR", str(matplotlib_dir))
+
+        model = YOLO(str(self.backbone_path))
+        model.train(
+            data=str(prepared_dataset.data_yaml_path),
+            epochs=self.epochs,
+            imgsz=self.image_size,
+            patience=self.patience,
+            batch=self.batch_size,
+            seed=self.seed,
+            project=str(self.training_dir),
+            name=self.run_name,
+            exist_ok=True,
+            augment=self.augment,
+            workers=self.workers,
+            plots=self.plots,
+            device=self.device,
+        )
+        return self.training_dir / self.run_name
 
 
 class ChartDetectionPhase:
     phase_name = "chart-detection"
 
-    def __init__(self, model_path: Path, confidence_threshold: float = 0.25) -> None:
+    def __init__(
+        self,
+        model_path: Path,
+        confidence_threshold: float = 0.25,
+        expected_class_name: str = "chart",
+    ) -> None:
         self.model_path = model_path
         self.confidence_threshold = confidence_threshold
+        self.expected_class_name = expected_class_name
+
+    def run_from_source(self, source: Path, output_dir: Path) -> list[DetectionResult]:
+        if source.is_dir():
+            source_paths = sorted(
+                path
+                for path in source.iterdir()
+                if path.is_file() and path.suffix in IMAGE_SUFFIXES
+            )
+        else:
+            source_paths = [source]
+        return self.run(source_paths=source_paths, output_dir=output_dir)
 
     def run(self, source_paths: Sequence[Path], output_dir: Path) -> list[DetectionResult]:
         from ultralytics import YOLO
@@ -51,7 +508,7 @@ class ChartDetectionPhase:
             for index, box in enumerate(result.boxes):
                 class_id = int(box.cls[0])
                 class_name = model.names[class_id]
-                if class_name != "chart":
+                if class_name != self.expected_class_name:
                     continue
 
                 x1, y1, x2, y2 = map(int, box.xyxy[0])
@@ -72,4 +529,3 @@ class ChartDetectionPhase:
             )
 
         return sorted(phase_results, key=lambda item: item.image_id)
-
