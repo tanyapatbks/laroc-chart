@@ -59,9 +59,9 @@ class CoralPipeline:
             "- Phase 2 baseline analysis, crop normalization, and batch calibration commands implemented",
             "- Phase 2 quality metrics, unreadable-input reporting, and per-sample timeouts implemented",
             "- Phase 2 curated manifest evaluation implemented",
-            "- Phase 3 segmentation inventory, mixed-format label normalization, and dataset preparation commands implemented",
+            "- Phase 3 segmentation inventory, mixed-format label normalization, preparation, training, and inference commands implemented",
             "- Phase 4 and Phase 6 deterministic logic implemented",
-            "- Phase 3 and Phase 5 wrappers prepared",
+            "- Phase 5 wrappers prepared",
             "- Phase 2 model-based chart localization inside the crop remains open",
         ]
         return "\n".join(lines)

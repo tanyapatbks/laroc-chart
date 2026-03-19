@@ -4,9 +4,11 @@ from collections import Counter
 import json
 import os
 import random
+import signal
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
+from time import perf_counter
 from typing import Any, Sequence
 
 import cv2
@@ -172,6 +174,13 @@ class PreparedSegmentationDataset:
             "unassigned_count": self.unassigned_count,
             "split_strategy": self.split_strategy,
         }
+
+
+@dataclass(frozen=True)
+class PreparedSegmentationLabelPair:
+    image_path: Path
+    label_path: Path
+    split: str
 
 
 def parse_yolo_segmentation_label(
@@ -628,12 +637,200 @@ def prepare_segmentation_dataset(
     )
 
 
+def _collect_prepared_segmentation_label_pairs(
+    prepared_dataset: PreparedSegmentationDataset,
+    split: str,
+) -> list[PreparedSegmentationLabelPair]:
+    image_dir = prepared_dataset.root_dir / "images" / split
+    label_dir = prepared_dataset.root_dir / "labels" / split
+    pairs: list[PreparedSegmentationLabelPair] = []
+
+    for image_path in sorted(image_dir.iterdir()):
+        if not image_path.is_file():
+            continue
+        label_path = label_dir / f"{image_path.stem}.txt"
+        if not label_path.exists():
+            raise FileNotFoundError(
+                f"Prepared segmentation dataset is missing label for {image_path.name}: {label_path}"
+            )
+        pairs.append(
+            PreparedSegmentationLabelPair(
+                image_path=image_path,
+                label_path=label_path,
+                split=split,
+            )
+        )
+
+    return pairs
+
+
+def prewarm_segmentation_dataset(
+    prepared_dataset: PreparedSegmentationDataset,
+    num_classes: int,
+    drop_corrupt_samples: bool,
+    sample_timeout_seconds: int,
+    log_interval: int,
+) -> None:
+    from ultralytics.data.utils import verify_image_label
+
+    def _timeout_handler(signum, frame):
+        raise TimeoutError("sample verification timed out")
+
+    for split in ("train", "val"):
+        pairs = _collect_prepared_segmentation_label_pairs(prepared_dataset, split)
+        if not pairs:
+            continue
+
+        print(f"Prewarming {split} segmentation dataset verification ({len(pairs)} images)...")
+        start = perf_counter()
+        warnings: list[str] = []
+        removed_pairs: list[PreparedSegmentationLabelPair] = []
+
+        for index, pair in enumerate(pairs, start=1):
+            signal.signal(signal.SIGALRM, _timeout_handler)
+            signal.alarm(sample_timeout_seconds)
+            try:
+                _, _, _, _, _, _, _, _, corrupt_count, message = verify_image_label(
+                    (
+                        str(pair.image_path),
+                        str(pair.label_path),
+                        "",
+                        False,
+                        num_classes,
+                        0,
+                        0,
+                        False,
+                    )
+                )
+            except TimeoutError:
+                corrupt_count = 1
+                message = f"{pair.image_path}: verification exceeded {sample_timeout_seconds}s timeout"
+            finally:
+                signal.alarm(0)
+
+            if corrupt_count:
+                details = message or f"{pair.image_path} failed verification"
+                if drop_corrupt_samples:
+                    pair.image_path.unlink(missing_ok=True)
+                    pair.label_path.unlink(missing_ok=True)
+                    removed_pairs.append(pair)
+                    print(f"  {split}: removed corrupt sample {pair.image_path.name}")
+                    print(f"    reason: {details}")
+                else:
+                    warnings.append(details)
+            elif message:
+                warnings.append(message)
+
+            if index % log_interval == 0 or index == len(pairs):
+                elapsed = perf_counter() - start
+                print(f"  {split}: verified {index}/{len(pairs)} in {elapsed:.1f}s")
+
+        if removed_pairs:
+            print(f"  {split}: removed {len(removed_pairs)} corrupt samples before training")
+        if warnings:
+            sample = "\n".join(f"- {warning}" for warning in warnings[:10])
+            print(f"  {split}: warnings during verification:\n{sample}")
+
+
+class SegmentationTrainer:
+    def __init__(
+        self,
+        backbone_path: Path,
+        training_dir: Path,
+        run_name: str,
+        image_size: int,
+        batch_size: int,
+        epochs: int,
+        patience: int,
+        seed: int,
+        augment: bool,
+        workers: int,
+        plots: bool,
+        prewarm_font_cache: bool,
+        prewarm_dataset: bool,
+        drop_corrupt_samples: bool,
+        sample_timeout_seconds: int,
+        warmup_log_interval: int,
+        device: str,
+    ) -> None:
+        self.backbone_path = backbone_path
+        self.training_dir = training_dir
+        self.run_name = run_name
+        self.image_size = image_size
+        self.batch_size = batch_size
+        self.epochs = epochs
+        self.patience = patience
+        self.seed = seed
+        self.augment = augment
+        self.workers = workers
+        self.plots = plots
+        self.prewarm_font_cache = prewarm_font_cache
+        self.prewarm_dataset = prewarm_dataset
+        self.drop_corrupt_samples = drop_corrupt_samples
+        self.sample_timeout_seconds = sample_timeout_seconds
+        self.warmup_log_interval = warmup_log_interval
+        self.device = device
+
+    def run(self, prepared_dataset: PreparedSegmentationDataset) -> Path:
+        from ultralytics import YOLO
+
+        from coral_thesis.phases.chart_detection import prewarm_ultralytics_runtime
+
+        if not self.backbone_path.exists():
+            raise FileNotFoundError(f"Segmentation backbone not found: {self.backbone_path}")
+
+        self.training_dir.mkdir(parents=True, exist_ok=True)
+        matplotlib_dir = self.training_dir / ".matplotlib"
+        matplotlib_dir.mkdir(parents=True, exist_ok=True)
+        os.environ["MPLCONFIGDIR"] = str(matplotlib_dir.resolve())
+
+        if self.prewarm_font_cache:
+            prewarm_ultralytics_runtime(matplotlib_dir)
+        if self.prewarm_dataset:
+            prewarm_segmentation_dataset(
+                prepared_dataset=prepared_dataset,
+                num_classes=1,
+                drop_corrupt_samples=self.drop_corrupt_samples,
+                sample_timeout_seconds=self.sample_timeout_seconds,
+                log_interval=self.warmup_log_interval,
+            )
+
+        model = YOLO(str(self.backbone_path))
+        model.train(
+            data=str(prepared_dataset.data_yaml_path),
+            epochs=self.epochs,
+            imgsz=self.image_size,
+            patience=self.patience,
+            batch=self.batch_size,
+            seed=self.seed,
+            project=str(self.training_dir),
+            name=self.run_name,
+            exist_ok=True,
+            augment=self.augment,
+            workers=self.workers,
+            plots=self.plots,
+            device=self.device,
+        )
+        return self.training_dir / self.run_name
+
+
 class CoralSegmentationPhase:
     phase_name = "coral-segmentation"
 
     def __init__(self, model_path: Path, confidence_threshold: float = 0.25) -> None:
         self.model_path = model_path
         self.confidence_threshold = confidence_threshold
+
+    def run_from_source(self, source: Path, output_dir: Path) -> list[SegmentationResult]:
+        if source.is_dir():
+            source_paths = sorted(
+                path
+                for path in source.iterdir()
+                if path.is_file() and path.suffix in IMAGE_SUFFIXES
+            )
+        else:
+            source_paths = [source]
+        return self.run(source_paths=source_paths, output_dir=output_dir)
 
     def run(self, source_paths: Sequence[Path], output_dir: Path) -> list[SegmentationResult]:
         from ultralytics import YOLO

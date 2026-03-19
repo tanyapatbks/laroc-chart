@@ -13,6 +13,8 @@ from coral_thesis.phases.chart_detection import (
 )
 from coral_thesis.phases.color_calibration import ColorCalibrationPhase
 from coral_thesis.phases.coral_segmentation import (
+    CoralSegmentationPhase,
+    SegmentationTrainer,
     build_segmentation_dataset_inventory,
     build_segmentation_inventory_report,
     load_legacy_segmentation_split_reference,
@@ -62,6 +64,10 @@ def build_parser() -> argparse.ArgumentParser:
         "--source",
         required=True,
         help="Path to a source image or directory to run inference on.",
+    )
+    phase1_infer.add_argument(
+        "--weights",
+        help="Optional path to a detector weights file. Overrides config-based resolution.",
     )
     subparsers.add_parser(
         "phase2-baseline",
@@ -120,6 +126,27 @@ def build_parser() -> argparse.ArgumentParser:
         "phase3-prepare",
         help="Prepare the Phase 3 YOLO segmentation dataset under the configured artifact path.",
     )
+    phase3_train = subparsers.add_parser(
+        "phase3-train",
+        help="Prepare and train the Phase 3 coral segmentation model.",
+    )
+    phase3_train.add_argument("--epochs", type=int, help="Override training epochs for this run.")
+    phase3_train.add_argument("--batch-size", type=int, help="Override batch size for this run.")
+    phase3_train.add_argument("--image-size", type=int, help="Override image size for this run.")
+    phase3_train.add_argument("--run-name", help="Override the training run name for this run.")
+    phase3_infer = subparsers.add_parser(
+        "phase3-infer",
+        help="Run Phase 3 inference using configured coral segmenter weights.",
+    )
+    phase3_infer.add_argument(
+        "--source",
+        required=True,
+        help="Path to a source image or directory to run inference on.",
+    )
+    phase3_infer.add_argument(
+        "--weights",
+        help="Optional path to a segmenter weights file. Overrides config-based resolution.",
+    )
     return parser
 
 
@@ -143,6 +170,25 @@ def _resolve_chart_detector_weights(config) -> Path:
     raise RuntimeError(
         "No chart detector weights were found. "
         "Set models.chart_detector_weights or run `phase1-train` first."
+    )
+
+
+def _resolve_coral_segmenter_weights(config) -> Path:
+    if config.models.coral_segmenter_weights is not None:
+        return config.models.coral_segmenter_weights
+
+    candidate = (
+        config.phase3.training_dir
+        / config.phase3.train.run_name
+        / "weights"
+        / "best.pt"
+    )
+    if candidate.exists():
+        return candidate
+
+    raise RuntimeError(
+        "No coral segmenter weights were found. "
+        "Set models.coral_segmenter_weights or run `phase3-train` first."
     )
 
 
@@ -243,7 +289,7 @@ def main() -> None:
 
     if args.command == "phase1-infer":
         phase = ChartDetectionPhase(
-            model_path=_resolve_chart_detector_weights(config),
+            model_path=Path(args.weights) if args.weights else _resolve_chart_detector_weights(config),
             confidence_threshold=config.runtime.confidence_threshold,
             expected_class_name=config.phase1.class_name,
         )
@@ -367,6 +413,60 @@ def main() -> None:
             legacy_split_reference=legacy_reference,
         )
         _print_json(prepared.summary())
+        return
+
+    if args.command == "phase3-train":
+        inventory = build_segmentation_dataset_inventory(
+            dataset_dir=config.paths.dataset_dir,
+            label_dir=config.phase3.labels_dir,
+            class_name=config.phase3.class_name,
+        )
+        legacy_reference = None
+        if config.phase3.split_strategy == "legacy":
+            legacy_reference = load_legacy_segmentation_split_reference(config.phase3.legacy_dataset_dir)
+        prepared = prepare_segmentation_dataset(
+            inventory=inventory,
+            output_dir=config.phase3.prepared_dataset_dir,
+            class_name=config.phase3.class_name,
+            split_strategy=config.phase3.split_strategy,
+            use_symlinks=config.phase3.use_symlinks,
+            val_split=config.phase3.val_split,
+            seed=config.phase3.seed,
+            legacy_split_reference=legacy_reference,
+        )
+        trainer = SegmentationTrainer(
+            backbone_path=config.models.segmentation_backbone,
+            training_dir=config.phase3.training_dir,
+            run_name=args.run_name or config.phase3.train.run_name,
+            image_size=args.image_size or config.runtime.image_size,
+            batch_size=args.batch_size or config.phase3.train.batch_size,
+            epochs=args.epochs or config.phase3.train.epochs,
+            patience=config.phase3.train.patience,
+            seed=config.phase3.seed,
+            augment=config.phase3.train.augment,
+            workers=config.phase3.train.workers,
+            plots=config.phase3.train.plots,
+            prewarm_font_cache=config.phase3.train.prewarm_font_cache,
+            prewarm_dataset=config.phase3.train.prewarm_dataset,
+            drop_corrupt_samples=config.phase3.train.drop_corrupt_samples,
+            sample_timeout_seconds=config.phase3.train.sample_timeout_seconds,
+            warmup_log_interval=config.phase3.train.warmup_log_interval,
+            device=config.runtime.device,
+        )
+        run_dir = trainer.run(prepared)
+        print(f"Phase 3 training complete: {run_dir}")
+        return
+
+    if args.command == "phase3-infer":
+        phase = CoralSegmentationPhase(
+            model_path=Path(args.weights) if args.weights else _resolve_coral_segmenter_weights(config),
+            confidence_threshold=config.runtime.confidence_threshold,
+        )
+        results = phase.run_from_source(
+            source=Path(args.source),
+            output_dir=config.phase3.inference_dir,
+        )
+        print(f"Processed {len(results)} source images.")
         return
 
     raise RuntimeError(f"Unsupported command: {args.command}")

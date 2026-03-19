@@ -39,7 +39,7 @@ class RuntimeConfig:
 
 
 @dataclass(frozen=True)
-class Phase1TrainConfig:
+class TrainConfig:
     run_name: str
     epochs: int
     batch_size: int
@@ -66,7 +66,7 @@ class Phase1Config:
     excluded_image_ids: tuple[str, ...]
     use_symlinks: bool
     skip_unlabeled_images: bool
-    train: Phase1TrainConfig
+    train: TrainConfig
 
 
 @dataclass(frozen=True)
@@ -95,6 +95,7 @@ class Phase3Config:
     val_split: float
     seed: int
     use_symlinks: bool
+    train: TrainConfig
 
 
 @dataclass(frozen=True)
@@ -163,22 +164,9 @@ class PipelineConfig:
             issues.append("phase1.val_split must be within the interval (0, 1).")
         if self.phase1.seed < 0:
             issues.append("phase1.seed must be non-negative.")
-        if self.phase1.train.epochs <= 0:
-            issues.append("phase1.train.epochs must be a positive integer.")
-        if self.phase1.train.batch_size <= 0:
-            issues.append("phase1.train.batch_size must be a positive integer.")
-        if self.phase1.train.patience < 0:
-            issues.append("phase1.train.patience must be zero or greater.")
-        if self.phase1.train.workers < 0:
-            issues.append("phase1.train.workers must be zero or greater.")
-        if self.phase1.train.warmup_workers <= 0:
-            issues.append("phase1.train.warmup_workers must be a positive integer.")
-        if self.phase1.train.warmup_log_interval <= 0:
-            issues.append("phase1.train.warmup_log_interval must be a positive integer.")
-        if self.phase1.train.sample_timeout_seconds <= 0:
-            issues.append("phase1.train.sample_timeout_seconds must be a positive integer.")
         if not self.phase1.class_name:
             issues.append("phase1.class_name must not be empty.")
+        _validate_train_config(self.phase1.train, issues, "phase1.train")
         if self.phase2.patch_rows <= 0 or self.phase2.patch_cols <= 0:
             issues.append("phase2.patch_rows and phase2.patch_cols must be positive integers.")
         if not 0 < self.phase2.cell_sample_ratio <= 1:
@@ -211,6 +199,7 @@ class PipelineConfig:
             issues.append("phase3.val_split must be within the interval (0, 1).")
         if self.phase3.seed < 0:
             issues.append("phase3.seed must be non-negative.")
+        _validate_train_config(self.phase3.train, issues, "phase3.train")
 
         return issues
 
@@ -247,6 +236,41 @@ def _resolve_path(raw_value: str | None, project_root: Path) -> Path | None:
     return (project_root / candidate).resolve()
 
 
+def _load_train_config(raw: dict[str, Any], default_run_name: str) -> TrainConfig:
+    return TrainConfig(
+        run_name=str(raw.get("run_name", default_run_name)),
+        epochs=int(raw.get("epochs", 10)),
+        batch_size=int(raw.get("batch_size", 8)),
+        patience=int(raw.get("patience", 20)),
+        augment=bool(raw.get("augment", True)),
+        workers=int(raw.get("workers", 0)),
+        plots=bool(raw.get("plots", False)),
+        prewarm_font_cache=bool(raw.get("prewarm_font_cache", True)),
+        prewarm_dataset=bool(raw.get("prewarm_dataset", True)),
+        drop_corrupt_samples=bool(raw.get("drop_corrupt_samples", True)),
+        sample_timeout_seconds=int(raw.get("sample_timeout_seconds", 15)),
+        warmup_workers=int(raw.get("warmup_workers", 1)),
+        warmup_log_interval=int(raw.get("warmup_log_interval", 1)),
+    )
+
+
+def _validate_train_config(train: TrainConfig, issues: list[str], prefix: str) -> None:
+    if train.epochs <= 0:
+        issues.append(f"{prefix}.epochs must be a positive integer.")
+    if train.batch_size <= 0:
+        issues.append(f"{prefix}.batch_size must be a positive integer.")
+    if train.patience < 0:
+        issues.append(f"{prefix}.patience must be zero or greater.")
+    if train.workers < 0:
+        issues.append(f"{prefix}.workers must be zero or greater.")
+    if train.warmup_workers <= 0:
+        issues.append(f"{prefix}.warmup_workers must be a positive integer.")
+    if train.warmup_log_interval <= 0:
+        issues.append(f"{prefix}.warmup_log_interval must be a positive integer.")
+    if train.sample_timeout_seconds <= 0:
+        issues.append(f"{prefix}.sample_timeout_seconds must be a positive integer.")
+
+
 def load_config(config_path: str | Path) -> PipelineConfig:
     config_path = Path(config_path).resolve()
     project_root = config_path.parent.parent
@@ -261,6 +285,7 @@ def load_config(config_path: str | Path) -> PipelineConfig:
     phase1_train_raw = phase1_raw.get("train", {})
     phase2_raw = raw.get("phase2", {})
     phase3_raw = raw.get("phase3", {})
+    phase3_train_raw = phase3_raw.get("train", {})
 
     paths = PathConfig(
         dataset_dir=_resolve_path(paths_raw["dataset_dir"], project_root),
@@ -308,21 +333,7 @@ def load_config(config_path: str | Path) -> PipelineConfig:
         excluded_image_ids=tuple(str(value) for value in phase1_raw.get("excluded_image_ids", [])),
         use_symlinks=bool(phase1_raw.get("use_symlinks", True)),
         skip_unlabeled_images=bool(phase1_raw.get("skip_unlabeled_images", True)),
-        train=Phase1TrainConfig(
-            run_name=str(phase1_train_raw.get("run_name", "chart_detector")),
-            epochs=int(phase1_train_raw.get("epochs", 10)),
-            batch_size=int(phase1_train_raw.get("batch_size", 8)),
-            patience=int(phase1_train_raw.get("patience", 20)),
-            augment=bool(phase1_train_raw.get("augment", True)),
-            workers=int(phase1_train_raw.get("workers", 0)),
-            plots=bool(phase1_train_raw.get("plots", False)),
-            prewarm_font_cache=bool(phase1_train_raw.get("prewarm_font_cache", True)),
-            prewarm_dataset=bool(phase1_train_raw.get("prewarm_dataset", True)),
-            drop_corrupt_samples=bool(phase1_train_raw.get("drop_corrupt_samples", True)),
-            sample_timeout_seconds=int(phase1_train_raw.get("sample_timeout_seconds", 15)),
-            warmup_workers=int(phase1_train_raw.get("warmup_workers", 1)),
-            warmup_log_interval=int(phase1_train_raw.get("warmup_log_interval", 1)),
-        ),
+        train=_load_train_config(phase1_train_raw, default_run_name="chart_detector"),
     )
     phase2 = Phase2Config(
         output_dir=_resolve_path(
@@ -378,6 +389,7 @@ def load_config(config_path: str | Path) -> PipelineConfig:
         val_split=float(phase3_raw.get("val_split", 0.2)),
         seed=int(phase3_raw.get("seed", 42)),
         use_symlinks=bool(phase3_raw.get("use_symlinks", True)),
+        train=_load_train_config(phase3_train_raw, default_run_name="coral_segmenter"),
     )
 
     os.environ.setdefault("MPLCONFIGDIR", str((project_root / "artifacts" / ".matplotlib").resolve()))

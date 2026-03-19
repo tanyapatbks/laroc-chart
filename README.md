@@ -34,7 +34,7 @@ This first V2 scaffold provides:
 - a clean package layout
 - implemented phase contracts
 - Phase 1 dataset inventory, validation, preparation, training, and inference entrypoints
-- Phase 3 segmentation inventory and dataset preparation entrypoints
+- Phase 3 segmentation inventory, preparation, training, and inference entrypoints
 - deterministic category mapping
 - a reusable feature extraction module
 - phase wrappers for detection/segmentation/model inference
@@ -87,6 +87,7 @@ coral-thesis phase1-prepare --config configs/base.yaml
 coral-thesis phase1-train --config configs/base.yaml
 coral-thesis phase1-train --config configs/base.yaml --epochs 1 --image-size 320 --batch-size 4 --run-name chart_detector_smoke
 coral-thesis phase1-infer --config configs/base.yaml --source ../dataset/P8250005.JPG
+coral-thesis phase1-infer --config configs/base.yaml --source ../dataset/P8250005.JPG --weights artifacts/outputs/phase1/training/chart_detector_smoke/weights/best.pt
 coral-thesis phase2-baseline --config configs/base.yaml
 coral-thesis phase2-calibrate --config configs/base.yaml --source-image ../dataset/P8250008.JPG --chart-crop ../runs/inference/crops/P8250008_chart_0.jpg --output-name sample
 coral-thesis phase2-calibrate-batch --config configs/base.yaml --source-dir ../dataset --crops-dir ../runs/inference/crops --crop-glob 'P8250008_chart_0.jpg' --report-name sample_batch
@@ -140,12 +141,18 @@ Phase 3 starts by cleaning up segmentation training data before any new model wo
 3. Deduplicate noisy legacy aliases such as `P8250006 2.JPG`.
 4. Normalize mixed legacy annotations so 5-token bbox rows are converted into polygon masks during dataset preparation.
 5. Rebuild a clean YOLO segmentation dataset under `artifacts/outputs/phase3/dataset`.
+6. Train a clean segmentation model from the rebuilt dataset.
+7. Run segmentation inference from trained weights.
 
 Example commands:
 
 ```bash
 coral-thesis phase3-inventory --config configs/base.yaml
 coral-thesis phase3-prepare --config configs/base.yaml
+coral-thesis phase3-train --config configs/base.yaml
+coral-thesis phase3-train --config configs/base.yaml --epochs 1 --image-size 320 --batch-size 4 --run-name coral_segmenter_smoke
+coral-thesis phase3-infer --config configs/base.yaml --source ../dataset/P8250008.JPG
+coral-thesis phase3-infer --config configs/base.yaml --source ../dataset/P8250008.JPG --weights artifacts/outputs/phase3/training/coral_segmenter_smoke/weights/best.pt
 ```
 
 ## Next Build Steps
