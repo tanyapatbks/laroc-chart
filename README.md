@@ -36,6 +36,7 @@ This first V2 scaffold provides:
 - Phase 1 dataset inventory, validation, preparation, training, and inference entrypoints
 - Phase 3 segmentation inventory, preparation, training, and inference entrypoints
 - Phase 4 feature extraction inventory and batch export entrypoints
+- Phase 5 label-template export, training inventory, heuristic estimation, and model estimation entrypoints
 - deterministic category mapping
 - a reusable feature extraction module
 - phase wrappers for detection/segmentation/model inference
@@ -176,9 +177,35 @@ coral-thesis phase4-extract --config configs/base.yaml
 coral-thesis phase4-extract --config configs/base.yaml --output-name phase4_baseline
 ```
 
+## Phase 5 Workflow
+
+Phase 5 now supports two paths:
+
+1. A deterministic heuristic baseline that maps Phase 4 feature vectors to the nearest CoralWatch reference patch sampled from `baseline_chart.png`.
+2. A supervised training path that becomes available as soon as you provide a labels CSV.
+
+The labels CSV can use either of these schemas:
+
+- `image_id,category`
+- `image_id,hue_group,health_level`
+- `image_id,hue_group,health_score`
+
+Training normalizes all of those formats into a single internal target table.
+Inference can then run in `auto`, `heuristic`, or `model` mode.
+
+Example commands:
+
+```bash
+coral-thesis phase5-inventory --config configs/base.yaml
+coral-thesis phase5-label-template --config configs/base.yaml
+coral-thesis phase5-estimate --config configs/base.yaml --strategy heuristic
+coral-thesis phase5-train --config configs/base.yaml --labels-csv artifacts/outputs/phase5/labels.csv
+coral-thesis phase5-estimate --config configs/base.yaml --strategy auto --output-name phase5_model_predictions
+```
+
 ## Next Build Steps
 
-1. Wire Phase 4 output into Phase 5 training data preparation.
-2. Add Phase 5 training and evaluation entrypoints.
-3. Decide whether the 8 unlabeled Phase 3 images should be annotated or permanently excluded.
-4. Add experiment tracking and metrics reporting.
+1. Provide a real Phase 5 labels CSV and compare trained-model metrics against the heuristic baseline.
+2. Decide whether Phase 5 should regress continuous `health_score` directly or use ordinal calibration from annotated CoralWatch levels.
+3. Decide whether the 8 missing Phase 3 masks should be annotated or permanently excluded from downstream baselines.
+4. Add experiment tracking and model-comparison reporting.

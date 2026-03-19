@@ -25,6 +25,12 @@ from coral_thesis.phases.feature_extraction import (
     build_feature_extraction_inventory,
     extract_feature_dataset,
 )
+from coral_thesis.phases.health_estimation import (
+    build_phase5_inventory,
+    estimate_health_dataset,
+    export_phase5_label_template,
+    train_health_models,
+)
 from coral_thesis.pipeline import CoralPipeline
 
 
@@ -195,6 +201,81 @@ def build_parser() -> argparse.ArgumentParser:
         "--output-name",
         help="Optional filename stem for the generated CSV and JSON report.",
     )
+    phase5_inventory = subparsers.add_parser(
+        "phase5-inventory",
+        help="Inspect Phase 4 features and optional Phase 5 labels for training readiness.",
+    )
+    phase5_inventory.add_argument(
+        "--features-csv",
+        help="Optional Phase 4 feature table path. Defaults to phase4.features_csv_path.",
+    )
+    phase5_inventory.add_argument(
+        "--labels-csv",
+        help="Optional Phase 5 labels CSV path. Defaults to phase5.labels_csv_path.",
+    )
+    phase5_template = subparsers.add_parser(
+        "phase5-label-template",
+        help="Export a label template CSV from the current Phase 4 feature table.",
+    )
+    phase5_template.add_argument(
+        "--features-csv",
+        help="Optional Phase 4 feature table path. Defaults to phase4.features_csv_path.",
+    )
+    phase5_template.add_argument(
+        "--output",
+        help="Optional output path for the generated label template CSV.",
+    )
+    phase5_train = subparsers.add_parser(
+        "phase5-train",
+        help="Train Phase 5 hue and health models from Phase 4 features and labels.",
+    )
+    phase5_train.add_argument(
+        "--features-csv",
+        help="Optional Phase 4 feature table path. Defaults to phase4.features_csv_path.",
+    )
+    phase5_train.add_argument(
+        "--labels-csv",
+        help="Optional Phase 5 labels CSV path. Defaults to phase5.labels_csv_path.",
+    )
+    phase5_train.add_argument(
+        "--report-name",
+        default="phase5_training",
+        help="Filename stem for the Phase 5 training report inside the Phase 5 reports directory.",
+    )
+    phase5_train.add_argument(
+        "--hue-model",
+        help="Optional output path for the trained hue model.",
+    )
+    phase5_train.add_argument(
+        "--health-model",
+        help="Optional output path for the trained health model.",
+    )
+    phase5_estimate = subparsers.add_parser(
+        "phase5-estimate",
+        help="Estimate hue group and health score from a Phase 4 feature table.",
+    )
+    phase5_estimate.add_argument(
+        "--features-csv",
+        help="Optional Phase 4 feature table path. Defaults to phase4.features_csv_path.",
+    )
+    phase5_estimate.add_argument(
+        "--strategy",
+        default="auto",
+        choices=("auto", "heuristic", "model"),
+        help="Estimation strategy. 'auto' prefers trained models and falls back to heuristic.",
+    )
+    phase5_estimate.add_argument(
+        "--output-name",
+        help="Optional filename stem for the generated predictions CSV and JSON report.",
+    )
+    phase5_estimate.add_argument(
+        "--hue-model",
+        help="Optional hue model path. Overrides config/model-dir resolution.",
+    )
+    phase5_estimate.add_argument(
+        "--health-model",
+        help="Optional health model path. Overrides config/model-dir resolution.",
+    )
     return parser
 
 
@@ -256,6 +337,55 @@ def _resolve_phase4_output_paths(config, output_name: str | None) -> tuple[Path,
     default_csv_path = config.phase4.features_csv_path
     default_report_path = config.phase4.reports_dir / f"{default_csv_path.stem}.json"
     return default_csv_path, default_report_path
+
+
+def _resolve_phase5_features_csv(config, features_csv: str | None) -> Path:
+    return Path(features_csv) if features_csv else config.phase4.features_csv_path
+
+
+def _resolve_phase5_labels_csv(config, labels_csv: str | None) -> Path:
+    return Path(labels_csv) if labels_csv else config.phase5.labels_csv_path
+
+
+def _resolve_phase5_prediction_paths(config, output_name: str | None) -> tuple[Path, Path]:
+    if output_name:
+        return (
+            config.phase5.output_dir / f"{output_name}.csv",
+            config.phase5.reports_dir / f"{output_name}.json",
+        )
+
+    default_csv_path = config.phase5.predictions_csv_path
+    default_report_path = config.phase5.reports_dir / f"{default_csv_path.stem}.json"
+    return default_csv_path, default_report_path
+
+
+def _resolve_phase5_model_paths(
+    config,
+    hue_model: str | None,
+    health_model: str | None,
+) -> tuple[Path | None, Path | None]:
+    resolved_hue_model = None
+    resolved_health_model = None
+
+    if hue_model:
+        resolved_hue_model = Path(hue_model)
+    elif config.models.hue_model_path is not None:
+        resolved_hue_model = config.models.hue_model_path
+    else:
+        candidate = config.phase5.model_dir / "hue_model.joblib"
+        if candidate.exists():
+            resolved_hue_model = candidate
+
+    if health_model:
+        resolved_health_model = Path(health_model)
+    elif config.models.health_model_path is not None:
+        resolved_health_model = config.models.health_model_path
+    else:
+        candidate = config.phase5.model_dir / "health_model.joblib"
+        if candidate.exists():
+            resolved_health_model = candidate
+
+    return resolved_hue_model, resolved_health_model
 
 
 def main() -> None:
@@ -588,6 +718,64 @@ def main() -> None:
             report_path=report_path,
         )
         _print_json(extracted.summary())
+        return
+
+    if args.command == "phase5-inventory":
+        inventory = build_phase5_inventory(
+            features_csv_path=_resolve_phase5_features_csv(config, args.features_csv),
+            labels_csv_path=_resolve_phase5_labels_csv(config, args.labels_csv),
+        )
+        _print_json(inventory.summary())
+        return
+
+    if args.command == "phase5-label-template":
+        template_path = export_phase5_label_template(
+            features_csv_path=_resolve_phase5_features_csv(config, args.features_csv),
+            template_path=Path(args.output) if args.output else config.phase5.label_template_path,
+        )
+        _print_json({"label_template_path": str(template_path)})
+        return
+
+    if args.command == "phase5-train":
+        hue_model_path, health_model_path = _resolve_phase5_model_paths(
+            config,
+            args.hue_model,
+            args.health_model,
+        )
+        trained = train_health_models(
+            features_csv_path=_resolve_phase5_features_csv(config, args.features_csv),
+            labels_csv_path=_resolve_phase5_labels_csv(config, args.labels_csv),
+            baseline_chart_path=config.paths.baseline_chart_path,
+            hue_model_path=hue_model_path or (config.phase5.model_dir / "hue_model.joblib"),
+            health_model_path=health_model_path or (config.phase5.model_dir / "health_model.joblib"),
+            report_path=config.phase5.reports_dir / f"{args.report_name}.json",
+            seed=config.phase5.seed,
+            validation_split=config.phase5.train.validation_split,
+            classifier_estimators=config.phase5.train.classifier_estimators,
+            regressor_estimators=config.phase5.train.regressor_estimators,
+            max_depth=config.phase5.train.max_depth,
+            min_samples_leaf=config.phase5.train.min_samples_leaf,
+        )
+        _print_json(trained.summary())
+        return
+
+    if args.command == "phase5-estimate":
+        csv_path, report_path = _resolve_phase5_prediction_paths(config, args.output_name)
+        hue_model_path, health_model_path = _resolve_phase5_model_paths(
+            config,
+            args.hue_model,
+            args.health_model,
+        )
+        estimated = estimate_health_dataset(
+            features_csv_path=_resolve_phase5_features_csv(config, args.features_csv),
+            baseline_chart_path=config.paths.baseline_chart_path,
+            csv_path=csv_path,
+            report_path=report_path,
+            strategy=args.strategy,
+            hue_model_path=hue_model_path,
+            health_model_path=health_model_path,
+        )
+        _print_json(estimated.summary())
         return
 
     raise RuntimeError(f"Unsupported command: {args.command}")

@@ -48,6 +48,12 @@ class CoralPipeline:
             f"phase4_output_dir: {self.config.phase4.output_dir}",
             f"phase4_features_csv_path: {self.config.phase4.features_csv_path}",
             f"phase4_reports_dir: {self.config.phase4.reports_dir}",
+            f"phase5_labels_csv_path: {self.config.phase5.labels_csv_path}",
+            f"phase5_label_template_path: {self.config.phase5.label_template_path}",
+            f"phase5_output_dir: {self.config.phase5.output_dir}",
+            f"phase5_predictions_csv_path: {self.config.phase5.predictions_csv_path}",
+            f"phase5_reports_dir: {self.config.phase5.reports_dir}",
+            f"phase5_model_dir: {self.config.phase5.model_dir}",
             "",
             "Phases",
             "Phase 1: Chart detection",
@@ -65,8 +71,8 @@ class CoralPipeline:
             "- Phase 2 curated manifest evaluation implemented",
             "- Phase 3 segmentation inventory, mixed-format label normalization, preparation, training, inference, and evaluation commands implemented",
             "- Phase 4 feature extraction utility and batch extraction commands implemented",
+            "- Phase 5 inventory, label-template export, training, and heuristic/model estimation commands implemented",
             "- Phase 6 deterministic logic implemented",
-            "- Phase 5 wrappers prepared",
             "- Phase 2 model-based chart localization inside the crop remains open",
         ]
         return "\n".join(lines)

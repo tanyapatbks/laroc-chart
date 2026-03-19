@@ -107,6 +107,27 @@ class Phase4Config:
 
 
 @dataclass(frozen=True)
+class Phase5TrainConfig:
+    validation_split: float
+    classifier_estimators: int
+    regressor_estimators: int
+    max_depth: int | None
+    min_samples_leaf: int
+
+
+@dataclass(frozen=True)
+class Phase5Config:
+    seed: int
+    labels_csv_path: Path
+    label_template_path: Path
+    output_dir: Path
+    predictions_csv_path: Path
+    reports_dir: Path
+    model_dir: Path
+    train: Phase5TrainConfig
+
+
+@dataclass(frozen=True)
 class PipelineConfig:
     project_root: Path
     config_path: Path
@@ -117,6 +138,7 @@ class PipelineConfig:
     phase2: Phase2Config
     phase3: Phase3Config
     phase4: Phase4Config
+    phase5: Phase5Config
 
     def ensure_workspace(self) -> None:
         for directory in (
@@ -135,6 +157,9 @@ class PipelineConfig:
             self.phase3.evaluation_reports_dir,
             self.phase4.output_dir,
             self.phase4.reports_dir,
+            self.phase5.output_dir,
+            self.phase5.reports_dir,
+            self.phase5.model_dir,
         ):
             directory.mkdir(parents=True, exist_ok=True)
 
@@ -212,6 +237,16 @@ class PipelineConfig:
         if self.phase3.seed < 0:
             issues.append("phase3.seed must be non-negative.")
         _validate_train_config(self.phase3.train, issues, "phase3.train")
+        if not 0 < self.phase5.train.validation_split < 1:
+            issues.append("phase5.train.validation_split must be within the interval (0, 1).")
+        if self.phase5.train.classifier_estimators <= 0:
+            issues.append("phase5.train.classifier_estimators must be a positive integer.")
+        if self.phase5.train.regressor_estimators <= 0:
+            issues.append("phase5.train.regressor_estimators must be a positive integer.")
+        if self.phase5.train.min_samples_leaf <= 0:
+            issues.append("phase5.train.min_samples_leaf must be a positive integer.")
+        if self.phase5.seed < 0:
+            issues.append("phase5.seed must be non-negative.")
 
         return issues
 
@@ -299,6 +334,8 @@ def load_config(config_path: str | Path) -> PipelineConfig:
     phase3_raw = raw.get("phase3", {})
     phase3_train_raw = phase3_raw.get("train", {})
     phase4_raw = raw.get("phase4", {})
+    phase5_raw = raw.get("phase5", {})
+    phase5_train_raw = phase5_raw.get("train", {})
 
     paths = PathConfig(
         dataset_dir=_resolve_path(paths_raw["dataset_dir"], project_root),
@@ -422,6 +459,44 @@ def load_config(config_path: str | Path) -> PipelineConfig:
             project_root,
         ),
     )
+    phase5 = Phase5Config(
+        seed=int(phase5_raw.get("seed", 42)),
+        labels_csv_path=_resolve_path(
+            phase5_raw.get("labels_csv_path", "artifacts/outputs/phase5/labels.csv"),
+            project_root,
+        ),
+        label_template_path=_resolve_path(
+            phase5_raw.get("label_template_path", "artifacts/outputs/phase5/label_template.csv"),
+            project_root,
+        ),
+        output_dir=_resolve_path(
+            phase5_raw.get("output_dir", "artifacts/outputs/phase5"),
+            project_root,
+        ),
+        predictions_csv_path=_resolve_path(
+            phase5_raw.get("predictions_csv_path", "artifacts/outputs/phase5/predictions.csv"),
+            project_root,
+        ),
+        reports_dir=_resolve_path(
+            phase5_raw.get("reports_dir", "artifacts/reports/phase5"),
+            project_root,
+        ),
+        model_dir=_resolve_path(
+            phase5_raw.get("model_dir", "artifacts/models/phase5"),
+            project_root,
+        ),
+        train=Phase5TrainConfig(
+            validation_split=float(phase5_train_raw.get("validation_split", 0.2)),
+            classifier_estimators=int(phase5_train_raw.get("classifier_estimators", 200)),
+            regressor_estimators=int(phase5_train_raw.get("regressor_estimators", 200)),
+            max_depth=(
+                int(phase5_train_raw["max_depth"])
+                if phase5_train_raw.get("max_depth") is not None
+                else None
+            ),
+            min_samples_leaf=int(phase5_train_raw.get("min_samples_leaf", 1)),
+        ),
+    )
 
     os.environ.setdefault("MPLCONFIGDIR", str((project_root / "artifacts" / ".matplotlib").resolve()))
 
@@ -435,4 +510,5 @@ def load_config(config_path: str | Path) -> PipelineConfig:
         phase2=phase2,
         phase3=phase3,
         phase4=phase4,
+        phase5=phase5,
     )

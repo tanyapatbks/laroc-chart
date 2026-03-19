@@ -88,3 +88,18 @@ phase4:
   output_dir: artifacts/outputs/phase4
   features_csv_path: artifacts/outputs/phase4/features.csv
   reports_dir: artifacts/reports/phase4
+
+phase5:
+  seed: 42
+  labels_csv_path: artifacts/outputs/phase5/labels.csv
+  label_template_path: artifacts/outputs/phase5/label_template.csv
+  output_dir: artifacts/outputs/phase5
+  predictions_csv_path: artifacts/outputs/phase5/predictions.csv
+  reports_dir: artifacts/reports/phase5
+  model_dir: artifacts/models/phase5
+  train:
+    validation_split: 0.2
+    classifier_estimators: 200
+    regressor_estimators: 200
+    max_depth: null
+    min_samples_leaf: 1
