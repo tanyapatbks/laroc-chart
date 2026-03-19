@@ -17,6 +17,7 @@ from coral_thesis.phases.coral_segmentation import (
     SegmentationTrainer,
     build_segmentation_dataset_inventory,
     build_segmentation_inventory_report,
+    evaluate_segmentation_model,
     load_legacy_segmentation_split_reference,
     prepare_segmentation_dataset,
 )
@@ -147,6 +148,21 @@ def build_parser() -> argparse.ArgumentParser:
         "--weights",
         help="Optional path to a segmenter weights file. Overrides config-based resolution.",
     )
+    phase3_evaluate = subparsers.add_parser(
+        "phase3-evaluate",
+        help="Evaluate Phase 3 segmentation weights on the prepared validation split.",
+    )
+    phase3_evaluate.add_argument(
+        "--weights",
+        help="Optional path to a segmenter weights file. Overrides config-based resolution.",
+    )
+    phase3_evaluate.add_argument(
+        "--report-name",
+        default="phase3_evaluation",
+        help="Filename stem for the evaluation report inside the Phase 3 reports directory.",
+    )
+    phase3_evaluate.add_argument("--image-size", type=int, help="Override evaluation image size.")
+    phase3_evaluate.add_argument("--batch-size", type=int, help="Override evaluation batch size.")
     return parser
 
 
@@ -467,6 +483,37 @@ def main() -> None:
             output_dir=config.phase3.inference_dir,
         )
         print(f"Processed {len(results)} source images.")
+        return
+
+    if args.command == "phase3-evaluate":
+        inventory = build_segmentation_dataset_inventory(
+            dataset_dir=config.paths.dataset_dir,
+            label_dir=config.phase3.labels_dir,
+            class_name=config.phase3.class_name,
+        )
+        legacy_reference = None
+        if config.phase3.split_strategy == "legacy":
+            legacy_reference = load_legacy_segmentation_split_reference(config.phase3.legacy_dataset_dir)
+        prepared = prepare_segmentation_dataset(
+            inventory=inventory,
+            output_dir=config.phase3.prepared_dataset_dir,
+            class_name=config.phase3.class_name,
+            split_strategy=config.phase3.split_strategy,
+            use_symlinks=config.phase3.use_symlinks,
+            val_split=config.phase3.val_split,
+            seed=config.phase3.seed,
+            legacy_split_reference=legacy_reference,
+        )
+        report = evaluate_segmentation_model(
+            model_path=Path(args.weights) if args.weights else _resolve_coral_segmenter_weights(config),
+            prepared_dataset=prepared,
+            reports_dir=config.phase3.evaluation_reports_dir,
+            report_name=args.report_name,
+            image_size=args.image_size or config.runtime.image_size,
+            batch_size=args.batch_size or config.phase3.train.batch_size,
+            device=config.runtime.device,
+        )
+        _print_json(report)
         return
 
     raise RuntimeError(f"Unsupported command: {args.command}")

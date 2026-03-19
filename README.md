@@ -143,6 +143,7 @@ Phase 3 starts by cleaning up segmentation training data before any new model wo
 5. Rebuild a clean YOLO segmentation dataset under `artifacts/outputs/phase3/dataset`.
 6. Train a clean segmentation model from the rebuilt dataset.
 7. Run segmentation inference from trained weights.
+8. Evaluate trained weights and persist a JSON baseline report under `artifacts/reports/phase3`.
 
 Example commands:
 
@@ -153,6 +154,7 @@ coral-thesis phase3-train --config configs/base.yaml
 coral-thesis phase3-train --config configs/base.yaml --epochs 1 --image-size 320 --batch-size 4 --run-name coral_segmenter_smoke
 coral-thesis phase3-infer --config configs/base.yaml --source ../dataset/P8250008.JPG
 coral-thesis phase3-infer --config configs/base.yaml --source ../dataset/P8250008.JPG --weights artifacts/outputs/phase3/training/coral_segmenter_smoke/weights/best.pt
+coral-thesis phase3-evaluate --config configs/base.yaml --weights artifacts/outputs/phase3/training/coral_segmenter_smoke/weights/best.pt --report-name phase3_smoke
 ```
 
 ## Next Build Steps

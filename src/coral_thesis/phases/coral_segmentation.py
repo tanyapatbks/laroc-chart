@@ -814,6 +814,80 @@ class SegmentationTrainer:
         return self.training_dir / self.run_name
 
 
+def evaluate_segmentation_model(
+    model_path: Path,
+    prepared_dataset: PreparedSegmentationDataset,
+    reports_dir: Path,
+    report_name: str,
+    image_size: int,
+    batch_size: int,
+    device: str,
+) -> dict[str, Any]:
+    from ultralytics import YOLO
+
+    from coral_thesis.phases.chart_detection import prewarm_ultralytics_runtime
+
+    if not model_path.exists():
+        raise FileNotFoundError(f"Segmentation weights not found: {model_path}")
+
+    reports_dir = reports_dir.resolve()
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    matplotlib_dir = reports_dir / ".matplotlib"
+    matplotlib_dir.mkdir(parents=True, exist_ok=True)
+    os.environ["MPLCONFIGDIR"] = str(matplotlib_dir)
+    prewarm_ultralytics_runtime(matplotlib_dir)
+
+    ultralytics_project_dir = reports_dir / "ultralytics"
+    model = YOLO(str(model_path))
+    metrics = model.val(
+        data=str(prepared_dataset.data_yaml_path),
+        imgsz=image_size,
+        batch=batch_size,
+        workers=0,
+        device=device,
+        split="val",
+        plots=False,
+        project=str(ultralytics_project_dir),
+        name=report_name,
+    )
+
+    manifest_data = json.loads(prepared_dataset.manifest_path.read_text(encoding="utf-8"))
+    serialized_results = {key: float(value) for key, value in metrics.results_dict.items()}
+    speed = {
+        key: float(value)
+        for key, value in getattr(metrics, "speed", {}).items()
+    }
+    save_dir = Path(getattr(metrics, "save_dir", ultralytics_project_dir / report_name))
+    report = {
+        "report_name": report_name,
+        "weights_path": str(model_path.resolve()),
+        "prepared_dataset": prepared_dataset.summary(),
+        "prepared_manifest_path": str(prepared_dataset.manifest_path),
+        "source_summary": manifest_data.get("source_summary"),
+        "legacy_split_summary": manifest_data.get("legacy_split_summary"),
+        "results_dict": serialized_results,
+        "box_metrics": {
+            "precision": float(metrics.box.mp),
+            "recall": float(metrics.box.mr),
+            "map50": float(metrics.box.map50),
+            "map50_95": float(metrics.box.map),
+        },
+        "mask_metrics": {
+            "precision": float(metrics.seg.mp),
+            "recall": float(metrics.seg.mr),
+            "map50": float(metrics.seg.map50),
+            "map50_95": float(metrics.seg.map),
+        },
+        "speed_ms_per_image": speed,
+        "ultralytics_save_dir": str(save_dir),
+    }
+
+    report_path = reports_dir / f"{report_name}.json"
+    report_path.write_text(json.dumps(report, indent=2), encoding="utf-8")
+    report["report_path"] = str(report_path)
+    return report
+
+
 class CoralSegmentationPhase:
     phase_name = "coral-segmentation"
 

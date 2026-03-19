@@ -63,6 +63,7 @@ phase3:
   prepared_dataset_dir: artifacts/outputs/phase3/dataset
   training_dir: artifacts/outputs/phase3/training
   inference_dir: artifacts/outputs/phase3/inference
+  evaluation_reports_dir: artifacts/reports/phase3
   split_strategy: legacy
   legacy_dataset_dir: ../data/phase3
   val_split: 0.2

@@ -90,6 +90,7 @@ class Phase3Config:
     prepared_dataset_dir: Path
     training_dir: Path
     inference_dir: Path
+    evaluation_reports_dir: Path
     split_strategy: str
     legacy_dataset_dir: Path | None
     val_split: float
@@ -123,6 +124,7 @@ class PipelineConfig:
             self.phase3.prepared_dataset_dir,
             self.phase3.training_dir,
             self.phase3.inference_dir,
+            self.phase3.evaluation_reports_dir,
         ):
             directory.mkdir(parents=True, exist_ok=True)
 
@@ -379,6 +381,10 @@ def load_config(config_path: str | Path) -> PipelineConfig:
         ),
         inference_dir=_resolve_path(
             phase3_raw.get("inference_dir", "artifacts/outputs/phase3/inference"),
+            project_root,
+        ),
+        evaluation_reports_dir=_resolve_path(
+            phase3_raw.get("evaluation_reports_dir", "artifacts/reports/phase3"),
             project_root,
         ),
         split_strategy=str(phase3_raw.get("split_strategy", "legacy")),
