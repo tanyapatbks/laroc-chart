@@ -1,0 +1,51 @@
+from __future__ import annotations
+
+from pathlib import Path
+
+from coral_thesis.config import IMAGE_SUFFIXES, PipelineConfig
+
+
+class CoralPipeline:
+    def __init__(self, config: PipelineConfig) -> None:
+        self.config = config
+
+    def bootstrap(self) -> None:
+        self.config.ensure_workspace()
+
+    def discover_source_images(self) -> list[Path]:
+        dataset_dir = self.config.paths.dataset_dir
+        if not dataset_dir.exists():
+            return []
+
+        return sorted(
+            path
+            for path in dataset_dir.iterdir()
+            if path.is_file() and path.suffix in IMAGE_SUFFIXES
+        )
+
+    def describe(self) -> str:
+        source_images = self.discover_source_images()
+        lines = [
+            "Coral Thesis V2 Pipeline",
+            f"project_root: {self.config.project_root}",
+            f"config_path: {self.config.config_path}",
+            f"dataset_dir: {self.config.paths.dataset_dir}",
+            f"baseline_chart_path: {self.config.paths.baseline_chart_path}",
+            f"source_images_detected: {len(source_images)}",
+            "",
+            "Phases",
+            "Phase 1: Chart detection",
+            "Phase 2: Color calibration",
+            "Phase 3: Coral segmentation",
+            "Phase 4: Feature extraction",
+            "Phase 5: Health estimation",
+            "Phase 6: Category mapping",
+            "",
+            "Status",
+            "- Foundation scaffold ready",
+            "- Phase 4 and Phase 6 deterministic logic implemented",
+            "- Phase 1, Phase 3, and Phase 5 wrappers prepared",
+            "- Phase 2 rewrite intentionally left for dedicated implementation",
+        ]
+        return "\n".join(lines)
+

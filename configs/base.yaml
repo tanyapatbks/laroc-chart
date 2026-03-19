@@ -1,0 +1,21 @@
+paths:
+  dataset_dir: ../dataset
+  baseline_chart_path: ../baseline_chart.png
+  artifacts_dir: artifacts
+  outputs_dir: artifacts/outputs
+  temp_dir: artifacts/temp
+  reports_dir: artifacts/reports
+
+models:
+  chart_detector_weights: null
+  coral_segmenter_weights: null
+  hue_model_path: null
+  health_model_path: null
+  detection_backbone: ../yolov8n.pt
+  segmentation_backbone: ../yolov8n-seg.pt
+
+runtime:
+  confidence_threshold: 0.25
+  image_size: 640
+  device: cpu
+
