@@ -1,9 +1,15 @@
 import json
+import sys
 import tempfile
+import types
 import unittest
 from pathlib import Path
+from unittest import mock
+
+import numpy as np
 
 from coral_thesis.phases.coral_segmentation import (
+    CoralSegmentationPhase,
     build_segmentation_dataset_inventory,
     load_legacy_segmentation_split_reference,
     parse_yolo_segmentation_label,
@@ -182,6 +188,74 @@ class Phase3InventoryTests(unittest.TestCase):
             self.assertEqual(manifest["legacy_split_summary"]["duplicate_alias_count"], 1)
             prepared_label = (output_dir / "labels" / "train" / "a.txt").read_text(encoding="utf-8").strip()
             self.assertEqual(prepared_label, "0 0.300000 0.400000 0.700000 0.400000 0.700000 0.600000 0.300000 0.600000")
+
+    def test_segmentation_inference_uses_source_filenames_and_clears_stale_outputs(self) -> None:
+        class FakeMaskTensor:
+            def __init__(self, array: np.ndarray) -> None:
+                self._array = array
+
+            def cpu(self) -> "FakeMaskTensor":
+                return self
+
+            def numpy(self) -> np.ndarray:
+                return self._array
+
+        class FakeMasks:
+            def __init__(self, array: np.ndarray) -> None:
+                self.data = FakeMaskTensor(array)
+
+        class FakeResult:
+            def __init__(self, path: str, with_mask: bool) -> None:
+                self.path = path
+                self.orig_shape = (8, 8)
+                self.orig_img = np.full((8, 8, 3), 255, dtype=np.uint8)
+                self.masks = FakeMasks(np.ones((1, 8, 8), dtype=np.float32)) if with_mask else None
+
+        fake_results = [
+            FakeResult("image0.jpg", with_mask=False),
+            FakeResult("image1.jpg", with_mask=True),
+            FakeResult("image2.jpg", with_mask=True),
+        ]
+
+        class FakeYOLO:
+            def __init__(self, model_path: str) -> None:
+                self.model_path = model_path
+
+            def __call__(self, *args, **kwargs):
+                return iter(fake_results)
+
+        with tempfile.TemporaryDirectory() as tmp_dir:
+            root = Path(tmp_dir)
+            model_path = root / "model.pt"
+            output_dir = root / "outputs"
+            masks_dir = output_dir / "masks"
+            masked_dir = output_dir / "masked_images"
+            source_paths = [
+                root / "a.JPG",
+                root / "b.JPG",
+                root / "c.JPG",
+            ]
+
+            model_path.write_bytes(b"weights")
+            for source_path in source_paths:
+                source_path.write_bytes(b"image")
+
+            masks_dir.mkdir(parents=True, exist_ok=True)
+            masked_dir.mkdir(parents=True, exist_ok=True)
+            (masks_dir / "image1.png").write_bytes(b"stale")
+            (masked_dir / "image1.png").write_bytes(b"stale")
+
+            fake_ultralytics = types.SimpleNamespace(YOLO=FakeYOLO)
+            with mock.patch.dict(sys.modules, {"ultralytics": fake_ultralytics}):
+                phase = CoralSegmentationPhase(model_path=model_path, confidence_threshold=0.25)
+                results = phase.run(source_paths=source_paths, output_dir=output_dir)
+
+            self.assertEqual([result.image_id for result in results], ["b", "c"])
+            self.assertEqual([result.source_image_path for result in results], source_paths[1:])
+            self.assertTrue((masks_dir / "b.png").exists())
+            self.assertTrue((masks_dir / "c.png").exists())
+            self.assertFalse((masks_dir / "image1.png").exists())
+            self.assertFalse((masked_dir / "image1.png").exists())
 
 
 if __name__ == "__main__":

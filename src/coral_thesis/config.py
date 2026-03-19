@@ -100,6 +100,13 @@ class Phase3Config:
 
 
 @dataclass(frozen=True)
+class Phase4Config:
+    output_dir: Path
+    features_csv_path: Path
+    reports_dir: Path
+
+
+@dataclass(frozen=True)
 class PipelineConfig:
     project_root: Path
     config_path: Path
@@ -109,6 +116,7 @@ class PipelineConfig:
     phase1: Phase1Config
     phase2: Phase2Config
     phase3: Phase3Config
+    phase4: Phase4Config
 
     def ensure_workspace(self) -> None:
         for directory in (
@@ -125,6 +133,8 @@ class PipelineConfig:
             self.phase3.training_dir,
             self.phase3.inference_dir,
             self.phase3.evaluation_reports_dir,
+            self.phase4.output_dir,
+            self.phase4.reports_dir,
         ):
             directory.mkdir(parents=True, exist_ok=True)
 
@@ -288,6 +298,7 @@ def load_config(config_path: str | Path) -> PipelineConfig:
     phase2_raw = raw.get("phase2", {})
     phase3_raw = raw.get("phase3", {})
     phase3_train_raw = phase3_raw.get("train", {})
+    phase4_raw = raw.get("phase4", {})
 
     paths = PathConfig(
         dataset_dir=_resolve_path(paths_raw["dataset_dir"], project_root),
@@ -397,6 +408,20 @@ def load_config(config_path: str | Path) -> PipelineConfig:
         use_symlinks=bool(phase3_raw.get("use_symlinks", True)),
         train=_load_train_config(phase3_train_raw, default_run_name="coral_segmenter"),
     )
+    phase4 = Phase4Config(
+        output_dir=_resolve_path(
+            phase4_raw.get("output_dir", "artifacts/outputs/phase4"),
+            project_root,
+        ),
+        features_csv_path=_resolve_path(
+            phase4_raw.get("features_csv_path", "artifacts/outputs/phase4/features.csv"),
+            project_root,
+        ),
+        reports_dir=_resolve_path(
+            phase4_raw.get("reports_dir", "artifacts/reports/phase4"),
+            project_root,
+        ),
+    )
 
     os.environ.setdefault("MPLCONFIGDIR", str((project_root / "artifacts" / ".matplotlib").resolve()))
 
@@ -409,4 +434,5 @@ def load_config(config_path: str | Path) -> PipelineConfig:
         phase1=phase1,
         phase2=phase2,
         phase3=phase3,
+        phase4=phase4,
     )

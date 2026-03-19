@@ -888,6 +888,20 @@ def evaluate_segmentation_model(
     return report
 
 
+def _resolve_segmentation_result_source_path(
+    source_paths: Sequence[Path],
+    result_index: int,
+    fallback_result_path: str | os.PathLike[str] | None,
+) -> Path:
+    if result_index < len(source_paths):
+        return source_paths[result_index]
+    if fallback_result_path is None:
+        raise IndexError(
+            "Segmentation inference returned more results than the number of provided source images."
+        )
+    return Path(fallback_result_path)
+
+
 class CoralSegmentationPhase:
     phase_name = "coral-segmentation"
 
@@ -915,8 +929,8 @@ class CoralSegmentationPhase:
         output_dir.mkdir(parents=True, exist_ok=True)
         masks_dir = output_dir / "masks"
         masked_dir = output_dir / "masked_images"
-        masks_dir.mkdir(parents=True, exist_ok=True)
-        masked_dir.mkdir(parents=True, exist_ok=True)
+        _ensure_empty_directory(masks_dir)
+        _ensure_empty_directory(masked_dir)
 
         model = YOLO(str(self.model_path))
         results = model(
@@ -927,12 +941,16 @@ class CoralSegmentationPhase:
         )
 
         phase_results: list[SegmentationResult] = []
-        for result in results:
+        for result_index, result in enumerate(results):
+            source_image_path = _resolve_segmentation_result_source_path(
+                source_paths=source_paths,
+                result_index=result_index,
+                fallback_result_path=getattr(result, "path", None),
+            )
             if result.masks is None:
                 continue
 
-            image_path = Path(result.path)
-            image_id = image_path.stem
+            image_id = source_image_path.stem
             full_mask = np.zeros(result.orig_shape[:2], dtype=np.uint8)
 
             for mask in result.masks.data.cpu().numpy():
@@ -948,7 +966,7 @@ class CoralSegmentationPhase:
             phase_results.append(
                 SegmentationResult(
                     image_id=image_id,
-                    source_image_path=image_path,
+                    source_image_path=source_image_path,
                     mask_path=mask_path,
                     masked_image_path=masked_image_path,
                 )

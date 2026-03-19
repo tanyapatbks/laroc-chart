@@ -35,6 +35,7 @@ This first V2 scaffold provides:
 - implemented phase contracts
 - Phase 1 dataset inventory, validation, preparation, training, and inference entrypoints
 - Phase 3 segmentation inventory, preparation, training, and inference entrypoints
+- Phase 4 feature extraction inventory and batch export entrypoints
 - deterministic category mapping
 - a reusable feature extraction module
 - phase wrappers for detection/segmentation/model inference
@@ -157,9 +158,27 @@ coral-thesis phase3-infer --config configs/base.yaml --source ../dataset/P825000
 coral-thesis phase3-evaluate --config configs/base.yaml --weights artifacts/outputs/phase3/training/coral_segmenter_smoke/weights/best.pt --report-name phase3_smoke
 ```
 
+## Phase 4 Workflow
+
+Phase 4 turns segmentation masks into tabular feature vectors:
+
+1. Audit source images against available Phase 3 masks.
+2. Match source images and masks by image id.
+3. Extract deterministic color statistics from masked coral pixels.
+4. Save a feature CSV under `artifacts/outputs/phase4`.
+5. Save a JSON report under `artifacts/reports/phase4`.
+
+Example commands:
+
+```bash
+coral-thesis phase4-inventory --config configs/base.yaml
+coral-thesis phase4-extract --config configs/base.yaml
+coral-thesis phase4-extract --config configs/base.yaml --output-name phase4_baseline
+```
+
 ## Next Build Steps
 
-1. Rewrite Phase 2 color calibration with explicit chart patch correspondence.
-2. Add dataset manifest generation and label validation for later phases.
-3. Add training and evaluation entrypoints per remaining phase.
+1. Wire Phase 4 output into Phase 5 training data preparation.
+2. Add Phase 5 training and evaluation entrypoints.
+3. Decide whether the 8 unlabeled Phase 3 images should be annotated or permanently excluded.
 4. Add experiment tracking and metrics reporting.

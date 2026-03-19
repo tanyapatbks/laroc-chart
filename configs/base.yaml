@@ -83,3 +83,8 @@ phase3:
     sample_timeout_seconds: 15
     warmup_workers: 1
     warmup_log_interval: 1
+
+phase4:
+  output_dir: artifacts/outputs/phase4
+  features_csv_path: artifacts/outputs/phase4/features.csv
+  reports_dir: artifacts/reports/phase4

@@ -21,6 +21,10 @@ from coral_thesis.phases.coral_segmentation import (
     load_legacy_segmentation_split_reference,
     prepare_segmentation_dataset,
 )
+from coral_thesis.phases.feature_extraction import (
+    build_feature_extraction_inventory,
+    extract_feature_dataset,
+)
 from coral_thesis.pipeline import CoralPipeline
 
 
@@ -163,6 +167,34 @@ def build_parser() -> argparse.ArgumentParser:
     )
     phase3_evaluate.add_argument("--image-size", type=int, help="Override evaluation image size.")
     phase3_evaluate.add_argument("--batch-size", type=int, help="Override evaluation batch size.")
+    phase4_inventory = subparsers.add_parser(
+        "phase4-inventory",
+        help="Inspect available source images and Phase 3 masks for feature extraction.",
+    )
+    phase4_inventory.add_argument(
+        "--source-dir",
+        help="Optional directory containing source images. Defaults to the configured dataset directory.",
+    )
+    phase4_inventory.add_argument(
+        "--mask-dir",
+        help="Optional directory containing segmentation masks. Defaults to phase3.inference_dir/masks.",
+    )
+    phase4_extract = subparsers.add_parser(
+        "phase4-extract",
+        help="Extract Phase 4 feature vectors into a CSV and JSON report.",
+    )
+    phase4_extract.add_argument(
+        "--source-dir",
+        help="Optional directory containing source images. Defaults to the configured dataset directory.",
+    )
+    phase4_extract.add_argument(
+        "--mask-dir",
+        help="Optional directory containing segmentation masks. Defaults to phase3.inference_dir/masks.",
+    )
+    phase4_extract.add_argument(
+        "--output-name",
+        help="Optional filename stem for the generated CSV and JSON report.",
+    )
     return parser
 
 
@@ -206,6 +238,24 @@ def _resolve_coral_segmenter_weights(config) -> Path:
         "No coral segmenter weights were found. "
         "Set models.coral_segmenter_weights or run `phase3-train` first."
     )
+
+
+def _resolve_phase4_paths(config, source_dir: str | None, mask_dir: str | None) -> tuple[Path, Path]:
+    resolved_source_dir = Path(source_dir) if source_dir else config.paths.dataset_dir
+    resolved_mask_dir = Path(mask_dir) if mask_dir else (config.phase3.inference_dir / "masks")
+    return resolved_source_dir, resolved_mask_dir
+
+
+def _resolve_phase4_output_paths(config, output_name: str | None) -> tuple[Path, Path]:
+    if output_name:
+        return (
+            config.phase4.output_dir / f"{output_name}.csv",
+            config.phase4.reports_dir / f"{output_name}.json",
+        )
+
+    default_csv_path = config.phase4.features_csv_path
+    default_report_path = config.phase4.reports_dir / f"{default_csv_path.stem}.json"
+    return default_csv_path, default_report_path
 
 
 def main() -> None:
@@ -514,6 +564,30 @@ def main() -> None:
             device=config.runtime.device,
         )
         _print_json(report)
+        return
+
+    if args.command == "phase4-inventory":
+        source_dir, mask_dir = _resolve_phase4_paths(config, args.source_dir, args.mask_dir)
+        inventory = build_feature_extraction_inventory(
+            source_dir=source_dir,
+            mask_dir=mask_dir,
+        )
+        _print_json(inventory.summary())
+        return
+
+    if args.command == "phase4-extract":
+        source_dir, mask_dir = _resolve_phase4_paths(config, args.source_dir, args.mask_dir)
+        inventory = build_feature_extraction_inventory(
+            source_dir=source_dir,
+            mask_dir=mask_dir,
+        )
+        csv_path, report_path = _resolve_phase4_output_paths(config, args.output_name)
+        extracted = extract_feature_dataset(
+            inventory=inventory,
+            csv_path=csv_path,
+            report_path=report_path,
+        )
+        _print_json(extracted.summary())
         return
 
     raise RuntimeError(f"Unsupported command: {args.command}")
