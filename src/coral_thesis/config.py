@@ -84,6 +84,20 @@ class Phase2Config:
 
 
 @dataclass(frozen=True)
+class Phase3Config:
+    class_name: str
+    labels_dir: Path
+    prepared_dataset_dir: Path
+    training_dir: Path
+    inference_dir: Path
+    split_strategy: str
+    legacy_dataset_dir: Path | None
+    val_split: float
+    seed: int
+    use_symlinks: bool
+
+
+@dataclass(frozen=True)
 class PipelineConfig:
     project_root: Path
     config_path: Path
@@ -92,6 +106,7 @@ class PipelineConfig:
     runtime: RuntimeConfig
     phase1: Phase1Config
     phase2: Phase2Config
+    phase3: Phase3Config
 
     def ensure_workspace(self) -> None:
         for directory in (
@@ -104,6 +119,9 @@ class PipelineConfig:
             self.phase1.inference_dir,
             self.phase2.output_dir,
             self.phase2.evaluation_reports_dir,
+            self.phase3.prepared_dataset_dir,
+            self.phase3.training_dir,
+            self.phase3.inference_dir,
         ):
             directory.mkdir(parents=True, exist_ok=True)
 
@@ -179,6 +197,20 @@ class PipelineConfig:
             and self.phase2.sample_timeout_seconds <= 0
         ):
             issues.append("phase2.sample_timeout_seconds must be a positive integer when set.")
+        if not self.phase3.class_name:
+            issues.append("phase3.class_name must not be empty.")
+        if not self.phase3.labels_dir.exists():
+            issues.append(f"phase3.labels_dir does not exist: {self.phase3.labels_dir}")
+        if self.phase3.split_strategy not in {"legacy", "random"}:
+            issues.append("phase3.split_strategy must be either 'legacy' or 'random'.")
+        if self.phase3.legacy_dataset_dir is not None and not self.phase3.legacy_dataset_dir.exists():
+            issues.append(f"phase3.legacy_dataset_dir does not exist: {self.phase3.legacy_dataset_dir}")
+        if self.phase3.split_strategy == "legacy" and self.phase3.legacy_dataset_dir is None:
+            issues.append("phase3.legacy_dataset_dir is required when phase3.split_strategy='legacy'.")
+        if not 0 < self.phase3.val_split < 1:
+            issues.append("phase3.val_split must be within the interval (0, 1).")
+        if self.phase3.seed < 0:
+            issues.append("phase3.seed must be non-negative.")
 
         return issues
 
@@ -228,6 +260,7 @@ def load_config(config_path: str | Path) -> PipelineConfig:
     phase1_raw = raw.get("phase1", {})
     phase1_train_raw = phase1_raw.get("train", {})
     phase2_raw = raw.get("phase2", {})
+    phase3_raw = raw.get("phase3", {})
 
     paths = PathConfig(
         dataset_dir=_resolve_path(paths_raw["dataset_dir"], project_root),
@@ -319,6 +352,33 @@ def load_config(config_path: str | Path) -> PipelineConfig:
             else None
         ),
     )
+    phase3 = Phase3Config(
+        class_name=str(phase3_raw.get("class_name", "coral")),
+        labels_dir=_resolve_path(
+            phase3_raw.get("labels_dir", "../data/phase3/labels"),
+            project_root,
+        ),
+        prepared_dataset_dir=_resolve_path(
+            phase3_raw.get("prepared_dataset_dir", "artifacts/outputs/phase3/dataset"),
+            project_root,
+        ),
+        training_dir=_resolve_path(
+            phase3_raw.get("training_dir", "artifacts/outputs/phase3/training"),
+            project_root,
+        ),
+        inference_dir=_resolve_path(
+            phase3_raw.get("inference_dir", "artifacts/outputs/phase3/inference"),
+            project_root,
+        ),
+        split_strategy=str(phase3_raw.get("split_strategy", "legacy")),
+        legacy_dataset_dir=_resolve_path(
+            phase3_raw.get("legacy_dataset_dir", "../data/phase3"),
+            project_root,
+        ),
+        val_split=float(phase3_raw.get("val_split", 0.2)),
+        seed=int(phase3_raw.get("seed", 42)),
+        use_symlinks=bool(phase3_raw.get("use_symlinks", True)),
+    )
 
     os.environ.setdefault("MPLCONFIGDIR", str((project_root / "artifacts" / ".matplotlib").resolve()))
 
@@ -330,4 +390,5 @@ def load_config(config_path: str | Path) -> PipelineConfig:
         runtime=runtime,
         phase1=phase1,
         phase2=phase2,
+        phase3=phase3,
     )

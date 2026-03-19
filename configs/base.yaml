@@ -56,3 +56,15 @@ phase2:
   min_patch_count: 8
   method: linear
   sample_timeout_seconds: 20
+
+phase3:
+  class_name: coral
+  labels_dir: ../data/phase3/labels
+  prepared_dataset_dir: artifacts/outputs/phase3/dataset
+  training_dir: artifacts/outputs/phase3/training
+  inference_dir: artifacts/outputs/phase3/inference
+  split_strategy: legacy
+  legacy_dataset_dir: ../data/phase3
+  val_split: 0.2
+  seed: 42
+  use_symlinks: true

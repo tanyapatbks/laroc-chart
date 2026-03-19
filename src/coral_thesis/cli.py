@@ -12,6 +12,12 @@ from coral_thesis.phases.chart_detection import (
     prepare_chart_detection_dataset,
 )
 from coral_thesis.phases.color_calibration import ColorCalibrationPhase
+from coral_thesis.phases.coral_segmentation import (
+    build_segmentation_dataset_inventory,
+    build_segmentation_inventory_report,
+    load_legacy_segmentation_split_reference,
+    prepare_segmentation_dataset,
+)
 from coral_thesis.pipeline import CoralPipeline
 
 
@@ -105,6 +111,14 @@ def build_parser() -> argparse.ArgumentParser:
         "--report-name",
         default="phase2_evaluation",
         help="Filename stem for the evaluation report inside the Phase 2 evaluation reports directory.",
+    )
+    subparsers.add_parser(
+        "phase3-inventory",
+        help="Inspect raw Phase 3 segmentation labels and legacy split metadata.",
+    )
+    subparsers.add_parser(
+        "phase3-prepare",
+        help="Prepare the Phase 3 YOLO segmentation dataset under the configured artifact path.",
     )
     return parser
 
@@ -319,6 +333,40 @@ def main() -> None:
             report_name=args.report_name,
         )
         _print_json(report)
+        return
+
+    if args.command == "phase3-inventory":
+        inventory = build_segmentation_dataset_inventory(
+            dataset_dir=config.paths.dataset_dir,
+            label_dir=config.phase3.labels_dir,
+            class_name=config.phase3.class_name,
+        )
+        legacy_reference = None
+        if config.phase3.legacy_dataset_dir is not None and config.phase3.legacy_dataset_dir.exists():
+            legacy_reference = load_legacy_segmentation_split_reference(config.phase3.legacy_dataset_dir)
+        _print_json(build_segmentation_inventory_report(inventory, legacy_reference))
+        return
+
+    if args.command == "phase3-prepare":
+        inventory = build_segmentation_dataset_inventory(
+            dataset_dir=config.paths.dataset_dir,
+            label_dir=config.phase3.labels_dir,
+            class_name=config.phase3.class_name,
+        )
+        legacy_reference = None
+        if config.phase3.split_strategy == "legacy":
+            legacy_reference = load_legacy_segmentation_split_reference(config.phase3.legacy_dataset_dir)
+        prepared = prepare_segmentation_dataset(
+            inventory=inventory,
+            output_dir=config.phase3.prepared_dataset_dir,
+            class_name=config.phase3.class_name,
+            split_strategy=config.phase3.split_strategy,
+            use_symlinks=config.phase3.use_symlinks,
+            val_split=config.phase3.val_split,
+            seed=config.phase3.seed,
+            legacy_split_reference=legacy_reference,
+        )
+        _print_json(prepared.summary())
         return
 
     raise RuntimeError(f"Unsupported command: {args.command}")

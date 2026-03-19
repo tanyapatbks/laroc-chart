@@ -34,6 +34,7 @@ This first V2 scaffold provides:
 - a clean package layout
 - implemented phase contracts
 - Phase 1 dataset inventory, validation, preparation, training, and inference entrypoints
+- Phase 3 segmentation inventory and dataset preparation entrypoints
 - deterministic category mapping
 - a reusable feature extraction module
 - phase wrappers for detection/segmentation/model inference
@@ -89,6 +90,8 @@ coral-thesis phase1-infer --config configs/base.yaml --source ../dataset/P825000
 coral-thesis phase2-baseline --config configs/base.yaml
 coral-thesis phase2-calibrate --config configs/base.yaml --source-image ../dataset/P8250008.JPG --chart-crop ../runs/inference/crops/P8250008_chart_0.jpg --output-name sample
 coral-thesis phase2-calibrate-batch --config configs/base.yaml --source-dir ../dataset --crops-dir ../runs/inference/crops --crop-glob 'P8250008_chart_0.jpg' --report-name sample_batch
+coral-thesis phase3-inventory --config configs/base.yaml
+coral-thesis phase3-prepare --config configs/base.yaml
 ```
 
 After `phase1-train`, `phase1-infer` will automatically look for
@@ -127,6 +130,23 @@ Batch calibration is now fail-fast per sample through `phase2.sample_timeout_sec
 Curated evaluation now lives in `configs/phase2_evaluation_manifest.yaml`.
 The manifest is intended to hold a small, stable mix of known-good and known-bad cases so Phase 2 can be regression-checked before Phase 3 work begins.
 Evaluation reports are written to `artifacts/reports/phase2`.
+
+## Phase 3 Workflow
+
+Phase 3 starts by cleaning up segmentation training data before any new model work:
+
+1. Audit segmentation images from `../dataset` and segmentation labels from `../data/phase3/labels`.
+2. Compare those labels against the legacy split under `../data/phase3`.
+3. Deduplicate noisy legacy aliases such as `P8250006 2.JPG`.
+4. Normalize mixed legacy annotations so 5-token bbox rows are converted into polygon masks during dataset preparation.
+5. Rebuild a clean YOLO segmentation dataset under `artifacts/outputs/phase3/dataset`.
+
+Example commands:
+
+```bash
+coral-thesis phase3-inventory --config configs/base.yaml
+coral-thesis phase3-prepare --config configs/base.yaml
+```
 
 ## Next Build Steps
 

@@ -1,12 +1,631 @@
 from __future__ import annotations
 
+from collections import Counter
+import json
+import os
+import random
+import shutil
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Sequence
 
 import cv2
 import numpy as np
+import yaml
 
+from coral_thesis.config import IMAGE_SUFFIXES
 from coral_thesis.domain import SegmentationResult
+
+BOUNDARY_EPSILON = 1e-6
+
+
+@dataclass(frozen=True)
+class SegmentationPolygon:
+    class_id: int
+    points: tuple[tuple[float, float], ...]
+    source_format: str = "polygon"
+
+    def as_yolo_row(self) -> str:
+        point_tokens = " ".join(f"{x:.6f} {y:.6f}" for x, y in self.points)
+        return f"{self.class_id} {point_tokens}"
+
+
+@dataclass(frozen=True)
+class SegmentationDatasetIssue:
+    path: Path
+    message: str
+
+    def to_dict(self) -> dict[str, str]:
+        return {"path": str(self.path), "message": self.message}
+
+
+@dataclass(frozen=True)
+class SegmentationDatasetItem:
+    image_path: Path
+    label_path: Path | None
+    polygons: tuple[SegmentationPolygon, ...]
+    issues: tuple[SegmentationDatasetIssue, ...]
+
+    @property
+    def image_id(self) -> str:
+        return self.image_path.stem
+
+    @property
+    def is_labeled(self) -> bool:
+        return self.label_path is not None
+
+    @property
+    def is_valid(self) -> bool:
+        return len(self.issues) == 0
+
+    @property
+    def polygon_count(self) -> int:
+        return len(self.polygons)
+
+    @property
+    def total_point_count(self) -> int:
+        return sum(len(polygon.points) for polygon in self.polygons)
+
+    @property
+    def annotation_format_counts(self) -> dict[str, int]:
+        counts = Counter(polygon.source_format for polygon in self.polygons)
+        return dict(sorted(counts.items()))
+
+
+@dataclass(frozen=True)
+class SegmentationDatasetInventory:
+    dataset_dir: Path
+    label_dir: Path
+    class_name: str
+    items: tuple[SegmentationDatasetItem, ...]
+    orphan_label_paths: tuple[Path, ...]
+    duplicate_label_paths: tuple[Path, ...]
+    json_annotation_paths: tuple[Path, ...]
+    issues: tuple[SegmentationDatasetIssue, ...]
+
+    @property
+    def labeled_items(self) -> tuple[SegmentationDatasetItem, ...]:
+        return tuple(item for item in self.items if item.is_labeled)
+
+    @property
+    def unlabeled_items(self) -> tuple[SegmentationDatasetItem, ...]:
+        return tuple(item for item in self.items if not item.is_labeled)
+
+    @property
+    def valid_labeled_items(self) -> tuple[SegmentationDatasetItem, ...]:
+        return tuple(item for item in self.labeled_items if item.is_valid and item.polygons)
+
+    def summary(self) -> dict[str, Any]:
+        annotation_format_counts = Counter()
+        for item in self.valid_labeled_items:
+            annotation_format_counts.update(item.annotation_format_counts)
+
+        return {
+            "dataset_dir": str(self.dataset_dir),
+            "label_dir": str(self.label_dir),
+            "class_name": self.class_name,
+            "image_count": len(self.items),
+            "labeled_image_count": len(self.labeled_items),
+            "unlabeled_image_count": len(self.unlabeled_items),
+            "valid_labeled_image_count": len(self.valid_labeled_items),
+            "polygon_count": sum(item.polygon_count for item in self.valid_labeled_items),
+            "point_count": sum(item.total_point_count for item in self.valid_labeled_items),
+            "orphan_label_count": len(self.orphan_label_paths),
+            "duplicate_label_count": len(self.duplicate_label_paths),
+            "json_annotation_count": len(self.json_annotation_paths),
+            "issue_count": len(self.issues),
+            "annotation_format_counts": dict(sorted(annotation_format_counts.items())),
+            "unlabeled_image_ids": [item.image_id for item in self.unlabeled_items],
+            "issues": [issue.to_dict() for issue in self.issues[:20]],
+        }
+
+
+@dataclass(frozen=True)
+class LegacySegmentationSplitReference:
+    root_dir: Path
+    train_image_ids: tuple[str, ...]
+    val_image_ids: tuple[str, ...]
+    duplicate_alias_names: tuple[str, ...]
+    conflicting_image_ids: tuple[str, ...]
+
+    @property
+    def assigned_image_ids(self) -> tuple[str, ...]:
+        assigned = set(self.train_image_ids) | set(self.val_image_ids)
+        return tuple(sorted(assigned))
+
+    @property
+    def split_by_image_id(self) -> dict[str, str]:
+        mapping = {image_id: "train" for image_id in self.train_image_ids}
+        mapping.update({image_id: "val" for image_id in self.val_image_ids})
+        return mapping
+
+    def summary(self) -> dict[str, Any]:
+        return {
+            "root_dir": str(self.root_dir),
+            "train_count": len(self.train_image_ids),
+            "val_count": len(self.val_image_ids),
+            "assigned_count": len(self.assigned_image_ids),
+            "duplicate_alias_count": len(self.duplicate_alias_names),
+            "duplicate_alias_names": list(self.duplicate_alias_names[:20]),
+            "conflicting_image_count": len(self.conflicting_image_ids),
+            "conflicting_image_ids": list(self.conflicting_image_ids),
+        }
+
+
+@dataclass(frozen=True)
+class PreparedSegmentationDataset:
+    root_dir: Path
+    data_yaml_path: Path
+    manifest_path: Path
+    train_count: int
+    val_count: int
+    unassigned_count: int
+    split_strategy: str
+
+    def summary(self) -> dict[str, Any]:
+        return {
+            "root_dir": str(self.root_dir),
+            "data_yaml_path": str(self.data_yaml_path),
+            "manifest_path": str(self.manifest_path),
+            "train_count": self.train_count,
+            "val_count": self.val_count,
+            "unassigned_count": self.unassigned_count,
+            "split_strategy": self.split_strategy,
+        }
+
+
+def parse_yolo_segmentation_label(
+    label_path: Path,
+) -> tuple[tuple[SegmentationPolygon, ...], tuple[SegmentationDatasetIssue, ...]]:
+    polygons: list[SegmentationPolygon] = []
+    issues: list[SegmentationDatasetIssue] = []
+
+    for line_number, raw_line in enumerate(label_path.read_text(encoding="utf-8").splitlines(), start=1):
+        line = raw_line.strip()
+        if not line:
+            continue
+
+        parts = line.split()
+        if len(parts) == 5:
+            try:
+                class_id = int(parts[0])
+                center_x, center_y, width, height = (float(value) for value in parts[1:])
+            except ValueError:
+                issues.append(
+                    SegmentationDatasetIssue(
+                        path=label_path,
+                        message=f"line {line_number}: non-numeric segmentation annotation values",
+                    )
+                )
+                continue
+
+            if class_id != 0:
+                issues.append(
+                    SegmentationDatasetIssue(
+                        path=label_path,
+                        message=f"line {line_number}: expected class id 0, found {class_id}",
+                    )
+                )
+
+            if width <= 0 or height <= 0:
+                issues.append(
+                    SegmentationDatasetIssue(
+                        path=label_path,
+                        message=f"line {line_number}: bbox width and height must be positive",
+                    )
+                )
+                continue
+
+            min_x = center_x - (width / 2.0)
+            max_x = center_x + (width / 2.0)
+            min_y = center_y - (height / 2.0)
+            max_y = center_y + (height / 2.0)
+            points = (
+                (min_x, min_y),
+                (max_x, min_y),
+                (max_x, max_y),
+                (min_x, max_y),
+            )
+
+            for point_index, (x, y) in enumerate(points, start=1):
+                if not (-BOUNDARY_EPSILON) <= x <= (1.0 + BOUNDARY_EPSILON):
+                    issues.append(
+                        SegmentationDatasetIssue(
+                            path=label_path,
+                            message=f"line {line_number}: point {point_index} x must be within [0, 1]",
+                        )
+                    )
+                if not (-BOUNDARY_EPSILON) <= y <= (1.0 + BOUNDARY_EPSILON):
+                    issues.append(
+                        SegmentationDatasetIssue(
+                            path=label_path,
+                            message=f"line {line_number}: point {point_index} y must be within [0, 1]",
+                        )
+                    )
+
+            polygons.append(
+                SegmentationPolygon(
+                    class_id=class_id,
+                    points=points,
+                    source_format="bbox",
+                )
+            )
+            continue
+
+        if len(parts) < 7:
+            issues.append(
+                SegmentationDatasetIssue(
+                    path=label_path,
+                    message=(
+                        f"line {line_number}: expected 5 (bbox) or at least 7 (polygon) tokens, "
+                        f"found {len(parts)}"
+                    ),
+                )
+            )
+            continue
+
+        if (len(parts) - 1) % 2 != 0:
+            issues.append(
+                SegmentationDatasetIssue(
+                    path=label_path,
+                    message=f"line {line_number}: polygon coordinate count must be even",
+                )
+            )
+            continue
+
+        try:
+            class_id = int(parts[0])
+            coordinates = [float(value) for value in parts[1:]]
+        except ValueError:
+            issues.append(
+                SegmentationDatasetIssue(
+                    path=label_path,
+                    message=f"line {line_number}: non-numeric segmentation annotation values",
+                )
+            )
+            continue
+
+        if class_id != 0:
+            issues.append(
+                SegmentationDatasetIssue(
+                    path=label_path,
+                    message=f"line {line_number}: expected class id 0, found {class_id}",
+                )
+            )
+
+        points = tuple((coordinates[index], coordinates[index + 1]) for index in range(0, len(coordinates), 2))
+        if len(points) < 3:
+            issues.append(
+                SegmentationDatasetIssue(
+                    path=label_path,
+                    message=f"line {line_number}: polygons require at least 3 points",
+                )
+            )
+
+        for point_index, (x, y) in enumerate(points, start=1):
+            if not (-BOUNDARY_EPSILON) <= x <= (1.0 + BOUNDARY_EPSILON):
+                issues.append(
+                    SegmentationDatasetIssue(
+                        path=label_path,
+                        message=f"line {line_number}: point {point_index} x must be within [0, 1]",
+                    )
+                )
+            if not (-BOUNDARY_EPSILON) <= y <= (1.0 + BOUNDARY_EPSILON):
+                issues.append(
+                    SegmentationDatasetIssue(
+                        path=label_path,
+                        message=f"line {line_number}: point {point_index} y must be within [0, 1]",
+                    )
+                )
+
+        polygons.append(
+            SegmentationPolygon(
+                class_id=class_id,
+                points=points,
+                source_format="polygon",
+            )
+        )
+
+    if not polygons and not issues:
+        issues.append(SegmentationDatasetIssue(path=label_path, message="label file is empty"))
+
+    return tuple(polygons), tuple(issues)
+
+
+def build_segmentation_dataset_inventory(
+    dataset_dir: Path,
+    label_dir: Path | None = None,
+    class_name: str = "coral",
+) -> SegmentationDatasetInventory:
+    label_dir = label_dir or dataset_dir
+    image_paths = sorted(
+        path
+        for path in dataset_dir.iterdir()
+        if path.is_file() and path.suffix in IMAGE_SUFFIXES
+    )
+    label_candidates = sorted(path for path in label_dir.rglob("*.txt") if path.is_file())
+    label_paths: dict[str, Path] = {}
+    duplicate_label_paths: list[Path] = []
+    for path in label_candidates:
+        if path.stem in label_paths:
+            duplicate_label_paths.append(path)
+            continue
+        label_paths[path.stem] = path
+    json_paths = tuple(sorted(dataset_dir.glob("*.json")))
+    image_stems = {path.stem for path in image_paths}
+    orphan_label_paths = tuple(sorted(path for stem, path in label_paths.items() if stem not in image_stems))
+
+    items: list[SegmentationDatasetItem] = []
+    issues: list[SegmentationDatasetIssue] = []
+
+    for image_path in image_paths:
+        label_path = label_paths.get(image_path.stem)
+        polygons: tuple[SegmentationPolygon, ...] = ()
+        item_issues: tuple[SegmentationDatasetIssue, ...] = ()
+
+        if label_path is not None:
+            polygons, item_issues = parse_yolo_segmentation_label(label_path)
+            issues.extend(item_issues)
+
+        items.append(
+            SegmentationDatasetItem(
+                image_path=image_path,
+                label_path=label_path,
+                polygons=polygons,
+                issues=item_issues,
+            )
+        )
+
+    for label_path in orphan_label_paths:
+        issues.append(
+            SegmentationDatasetIssue(
+                path=label_path,
+                message="label does not have a matching image",
+            )
+        )
+    for label_path in duplicate_label_paths:
+        issues.append(
+            SegmentationDatasetIssue(
+                path=label_path,
+                message="duplicate label stem detected; later file ignored",
+            )
+        )
+
+    return SegmentationDatasetInventory(
+        dataset_dir=dataset_dir,
+        label_dir=label_dir,
+        class_name=class_name,
+        items=tuple(items),
+        orphan_label_paths=orphan_label_paths,
+        duplicate_label_paths=tuple(sorted(duplicate_label_paths)),
+        json_annotation_paths=json_paths,
+        issues=tuple(issues),
+    )
+
+
+def load_legacy_segmentation_split_reference(reference_dir: Path) -> LegacySegmentationSplitReference:
+    images_root = reference_dir / "images"
+    split_mapping: dict[str, str] = {}
+    train_ids: set[str] = set()
+    val_ids: set[str] = set()
+    duplicate_alias_names: list[str] = []
+    conflicting_image_ids: set[str] = set()
+
+    for split_name, target_set in (("train", train_ids), ("val", val_ids)):
+        split_dir = images_root / split_name
+        if not split_dir.exists():
+            continue
+
+        for entry in sorted(split_dir.iterdir()):
+            if not entry.is_file() and not entry.is_symlink():
+                continue
+            if entry.suffix not in IMAGE_SUFFIXES:
+                continue
+
+            resolved = entry.resolve()
+            image_id = resolved.stem if resolved.suffix in IMAGE_SUFFIXES else entry.stem
+            if entry.stem != image_id:
+                duplicate_alias_names.append(entry.name)
+
+            existing_split = split_mapping.get(image_id)
+            if existing_split is not None and existing_split != split_name:
+                conflicting_image_ids.add(image_id)
+                continue
+            if existing_split is not None:
+                continue
+
+            split_mapping[image_id] = split_name
+            target_set.add(image_id)
+
+    for image_id in conflicting_image_ids:
+        train_ids.discard(image_id)
+        val_ids.discard(image_id)
+
+    return LegacySegmentationSplitReference(
+        root_dir=reference_dir.resolve(),
+        train_image_ids=tuple(sorted(train_ids)),
+        val_image_ids=tuple(sorted(val_ids)),
+        duplicate_alias_names=tuple(sorted(set(duplicate_alias_names))),
+        conflicting_image_ids=tuple(sorted(conflicting_image_ids)),
+    )
+
+
+def build_segmentation_inventory_report(
+    inventory: SegmentationDatasetInventory,
+    legacy_split_reference: LegacySegmentationSplitReference | None = None,
+) -> dict[str, Any]:
+    report = inventory.summary()
+    if legacy_split_reference is None:
+        return report
+
+    valid_image_ids = {item.image_id for item in inventory.valid_labeled_items}
+    assigned_image_ids = set(legacy_split_reference.assigned_image_ids)
+    report["legacy_split"] = legacy_split_reference.summary()
+    report["legacy_split"]["matched_valid_image_count"] = len(valid_image_ids & assigned_image_ids)
+    report["legacy_split"]["missing_valid_image_count"] = len(valid_image_ids - assigned_image_ids)
+    report["legacy_split"]["split_only_image_count"] = len(assigned_image_ids - valid_image_ids)
+    report["legacy_split"]["missing_valid_image_ids"] = sorted(valid_image_ids - assigned_image_ids)[:20]
+    report["legacy_split"]["split_only_image_ids"] = sorted(assigned_image_ids - valid_image_ids)[:20]
+    return report
+
+
+def _ensure_empty_directory(path: Path) -> None:
+    if path.exists():
+        shutil.rmtree(path)
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def _link_or_copy(source: Path, destination: Path, use_symlinks: bool) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    if destination.exists() or destination.is_symlink():
+        destination.unlink()
+
+    if use_symlinks:
+        try:
+            destination.symlink_to(source)
+            return
+        except OSError:
+            pass
+
+    try:
+        os.link(source, destination)
+        return
+    except OSError:
+        pass
+
+    shutil.copy2(source, destination)
+
+
+def _write_segmentation_label_file(destination: Path, polygons: tuple[SegmentationPolygon, ...]) -> None:
+    rows = [polygon.as_yolo_row() for polygon in polygons]
+    destination.write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+
+def _split_items_randomly(
+    items: tuple[SegmentationDatasetItem, ...],
+    val_split: float,
+    seed: int,
+) -> tuple[list[SegmentationDatasetItem], list[SegmentationDatasetItem]]:
+    ordered = list(items)
+    random.Random(seed).shuffle(ordered)
+
+    if not ordered:
+        return [], []
+    if len(ordered) == 1:
+        return ordered, []
+
+    val_count = max(1, int(len(ordered) * val_split))
+    val_count = min(val_count, len(ordered) - 1)
+    return ordered[val_count:], ordered[:val_count]
+
+
+def prepare_segmentation_dataset(
+    inventory: SegmentationDatasetInventory,
+    output_dir: Path,
+    class_name: str,
+    split_strategy: str,
+    use_symlinks: bool,
+    val_split: float,
+    seed: int,
+    legacy_split_reference: LegacySegmentationSplitReference | None = None,
+) -> PreparedSegmentationDataset:
+    dataset_root = output_dir.resolve()
+    _ensure_empty_directory(dataset_root)
+
+    images_root = dataset_root / "images"
+    labels_root = dataset_root / "labels"
+    for split in ("train", "val"):
+        (images_root / split).mkdir(parents=True, exist_ok=True)
+        (labels_root / split).mkdir(parents=True, exist_ok=True)
+
+    selected_items = inventory.valid_labeled_items
+    if not selected_items:
+        raise ValueError("No valid Phase 3 dataset items are available for preparation.")
+
+    unassigned_image_ids: list[str] = []
+    if split_strategy == "legacy":
+        if legacy_split_reference is None:
+            raise ValueError("legacy_split_reference is required when split_strategy='legacy'")
+
+        split_by_image_id = legacy_split_reference.split_by_image_id
+        conflicting_image_ids = set(legacy_split_reference.conflicting_image_ids)
+        train_items: list[SegmentationDatasetItem] = []
+        val_items: list[SegmentationDatasetItem] = []
+
+        for item in selected_items:
+            if item.image_id in conflicting_image_ids:
+                unassigned_image_ids.append(item.image_id)
+                continue
+
+            split_name = split_by_image_id.get(item.image_id)
+            if split_name == "train":
+                train_items.append(item)
+            elif split_name == "val":
+                val_items.append(item)
+            else:
+                unassigned_image_ids.append(item.image_id)
+    else:
+        train_items, val_items = _split_items_randomly(
+            selected_items,
+            val_split=val_split,
+            seed=seed,
+        )
+
+    if not train_items:
+        raise ValueError("Phase 3 preparation produced no training items.")
+    if split_strategy == "random" and not val_items:
+        raise ValueError("Phase 3 preparation produced no validation items.")
+
+    print(
+        "Preparing Phase 3 dataset "
+        f"(train={len(train_items)}, val={len(val_items)}, split_strategy={split_strategy}, "
+        f"unassigned={len(unassigned_image_ids)}, symlinks={use_symlinks})..."
+    )
+
+    for split_name, split_items in (("train", train_items), ("val", val_items)):
+        for index, item in enumerate(split_items, start=1):
+            destination_image = images_root / split_name / item.image_path.name
+            destination_label = labels_root / split_name / f"{item.image_id}.txt"
+            _link_or_copy(item.image_path, destination_image, use_symlinks=use_symlinks)
+            _write_segmentation_label_file(destination_label, item.polygons)
+
+            if index % 25 == 0 or index == len(split_items):
+                print(f"  {split_name}: prepared {index}/{len(split_items)}")
+
+    data_yaml_path = dataset_root / "data.yaml"
+    data_yaml = {
+        "path": str(dataset_root),
+        "train": str((images_root / "train").resolve()),
+        "val": str((images_root / "val").resolve()),
+        "names": {0: class_name},
+    }
+    data_yaml_path.write_text(yaml.safe_dump(data_yaml, sort_keys=False), encoding="utf-8")
+
+    manifest_path = dataset_root / "manifest.json"
+    manifest = {
+        "dataset_dir": str(inventory.dataset_dir),
+        "class_name": class_name,
+        "split_strategy": split_strategy,
+        "seed": seed,
+        "val_split": val_split,
+        "use_symlinks": use_symlinks,
+        "source_summary": inventory.summary(),
+        "legacy_split_summary": legacy_split_reference.summary() if legacy_split_reference is not None else None,
+        "train_image_ids": [item.image_id for item in train_items],
+        "val_image_ids": [item.image_id for item in val_items],
+        "unassigned_image_ids": sorted(unassigned_image_ids),
+    }
+    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
+
+    return PreparedSegmentationDataset(
+        root_dir=dataset_root,
+        data_yaml_path=data_yaml_path,
+        manifest_path=manifest_path,
+        train_count=len(train_items),
+        val_count=len(val_items),
+        unassigned_count=len(unassigned_image_ids),
+        split_strategy=split_strategy,
+    )
 
 
 class CoralSegmentationPhase:
@@ -65,4 +684,3 @@ class CoralSegmentationPhase:
             )
 
         return sorted(phase_results, key=lambda item: item.image_id)
-
