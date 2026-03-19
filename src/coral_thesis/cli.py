@@ -72,6 +72,27 @@ def build_parser() -> argparse.ArgumentParser:
         required=True,
         help="Filename stem for the calibrated output image inside the Phase 2 output directory.",
     )
+    phase2_batch = subparsers.add_parser(
+        "phase2-calibrate-batch",
+        help="Calibrate many source images using a directory of detected chart crops.",
+    )
+    phase2_batch.add_argument("--source-dir", required=True, help="Directory containing raw source images.")
+    phase2_batch.add_argument("--crops-dir", required=True, help="Directory containing chart crop images.")
+    phase2_batch.add_argument(
+        "--report-name",
+        default="batch_report",
+        help="Filename stem for the batch calibration report inside the Phase 2 output directory.",
+    )
+    phase2_batch.add_argument(
+        "--crop-glob",
+        default="*.jpg",
+        help="Glob pattern used to select crop images inside the crops directory.",
+    )
+    phase2_batch.add_argument(
+        "--limit",
+        type=int,
+        help="Optional maximum number of crop files to process.",
+    )
     return parser
 
 
@@ -238,6 +259,27 @@ def main() -> None:
             output_stem=args.output_name,
         )
         _print_json(result)
+        return
+
+    if args.command == "phase2-calibrate-batch":
+        phase = ColorCalibrationPhase(
+            baseline_chart_path=config.paths.baseline_chart_path,
+            baseline_profile_path=config.phase2.baseline_profile_path,
+            output_dir=config.phase2.output_dir,
+            patch_rows=config.phase2.patch_rows,
+            patch_cols=config.phase2.patch_cols,
+            cell_sample_ratio=config.phase2.cell_sample_ratio,
+            min_patch_count=config.phase2.min_patch_count,
+            method=config.phase2.method,
+        )
+        report = phase.calibrate_batch(
+            source_dir=Path(args.source_dir),
+            crops_dir=Path(args.crops_dir),
+            report_name=args.report_name,
+            crop_glob=args.crop_glob,
+            limit=args.limit,
+        )
+        _print_json(report)
         return
 
     raise RuntimeError(f"Unsupported command: {args.command}")

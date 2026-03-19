@@ -49,9 +49,9 @@ class CoralPipeline:
             "Status",
             "- Foundation scaffold ready",
             "- Phase 1 inventory, preparation, training, and inference commands implemented",
-            "- Phase 2 baseline analysis and single-image calibration commands implemented",
+            "- Phase 2 baseline analysis, crop normalization, and batch calibration commands implemented",
             "- Phase 4 and Phase 6 deterministic logic implemented",
             "- Phase 3 and Phase 5 wrappers prepared",
-            "- Phase 2 batch calibration and chart geometry refinement remain open",
+            "- Phase 2 model-based chart localization inside the crop remains open",
         ]
         return "\n".join(lines)

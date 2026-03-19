@@ -89,6 +89,7 @@ coral-thesis phase1-train --config configs/base.yaml --epochs 1 --image-size 320
 coral-thesis phase1-infer --config configs/base.yaml --source ../dataset/P8250005.JPG
 coral-thesis phase2-baseline --config configs/base.yaml
 coral-thesis phase2-calibrate --config configs/base.yaml --source-image ../dataset/P8250008.JPG --chart-crop ../runs/inference/crops/P8250008_chart_0.jpg --output-name sample
+coral-thesis phase2-calibrate-batch --config configs/base.yaml --source-dir ../dataset --crops-dir ../runs/inference/crops --crop-glob 'P8250008_chart_0.jpg' --report-name sample_batch
 ```
 
 After `phase1-train`, `phase1-infer` will automatically look for
@@ -101,7 +102,8 @@ Phase 2 rebuilds color calibration around explicit chart patch sampling:
 
 1. Analyze the baseline chart into a reusable patch profile.
 2. Sample the detected chart crop using the same grid geometry.
-3. Fit a linear color transform from crop colors to baseline colors.
+3. Normalize the chart crop before sampling so perspective/skew affects the calibration less.
+4. Fit a linear color transform from crop colors to baseline colors.
 4. Apply that transform to the full source image.
 
 Example commands:
@@ -109,6 +111,7 @@ Example commands:
 ```bash
 coral-thesis phase2-baseline --config configs/base.yaml
 coral-thesis phase2-calibrate --config configs/base.yaml --source-image ../dataset/P8250008.JPG --chart-crop ../runs/inference/crops/P8250008_chart_0.jpg --output-name sample
+coral-thesis phase2-calibrate-batch --config configs/base.yaml --source-dir ../dataset --crops-dir ../runs/inference/crops --crop-glob 'P8250008_chart_0.jpg' --report-name sample_batch
 ```
 
 ## Next Build Steps
